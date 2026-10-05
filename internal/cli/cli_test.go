@@ -18,15 +18,30 @@ func TestListShowsRoomsDevicesAndSensors(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"Kitchen (room)", "Hallway (room)", "Outside (zone)",
-		"Kitchen 1", "Kitchen Dimmer", "switch",
-		"Hall Sensor", "motion 30m ago",
-		"5 lights, 1 on",
+		"ROOM GROUP DEVICE TYPE STATE BRIGHT DETAIL",
+		"Kitchen room Kitchen 1 light on 70%",
+		"Kitchen room Kitchen 2 light off -",
+		"Kitchen room Kitchen Dimmer switch - - Hue dimmer switch (4 buttons)",
+		"Hallway room Hall Sensor sensor - - motion 30m ago",
+		"Outside zone Porch Left light on 70%",
+		"5 rooms/zones, 18 lights, 10 on",
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("ls output is missing %q\n--- output ---\n%s", want, out)
+		if !hasRow(out, want) {
+			t.Errorf("ls output is missing a row %q\n--- output ---\n%s", want, out)
 		}
 	}
+}
+
+// hasRow reports whether any line of out, with its column padding collapsed to
+// single spaces, contains want. It keeps table assertions independent of
+// column widths.
+func hasRow(out, want string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(strings.Join(strings.Fields(line), " "), want) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestListOnlyOnFilter(t *testing.T) {

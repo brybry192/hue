@@ -11,11 +11,15 @@ import (
 
 func (a *App) runConfig(args []string) error {
 	fs, cfgPath := a.newFlagSet("config", "config [flags] <show|path|init>")
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseArgs(fs, args)
+	if err != nil {
 		return ErrUsage
 	}
 
-	sub := fs.Arg(0)
+	var sub string
+	if len(positional) > 0 {
+		sub = positional[0]
+	}
 	if sub == "" {
 		sub = "show"
 	}

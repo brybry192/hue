@@ -14,7 +14,8 @@ import (
 // resource types this client does not model yet. Rather than guessing, look.
 func (a *App) runProbe(args []string) error {
 	fs, cfgPath := a.newFlagSet("probe", "probe [flags] [resource-type]")
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseArgs(fs, args)
+	if err != nil {
 		return ErrUsage
 	}
 
@@ -31,7 +32,11 @@ func (a *App) runProbe(args []string) error {
 	defer cancel()
 
 	// With a type argument, dump that type's raw JSON for inspection.
-	if rtype := fs.Arg(0); rtype != "" {
+	rtype := ""
+	if len(positional) > 0 {
+		rtype = positional[0]
+	}
+	if rtype != "" {
 		raw, err := client.RawType(ctx, rtype)
 		if err != nil {
 			return err

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/brybry192/hue/internal/hue"
 )
@@ -14,7 +13,8 @@ func (a *App) runList(args []string) error {
 	onlyOn := fs.Bool("on", false, "only show lights that are on")
 	asJSON := fs.Bool("json", false, "emit JSON")
 	rooms := fs.Bool("rooms", false, "only show rooms, not zones")
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseArgs(fs, args)
+	if err != nil {
 		return ErrUsage
 	}
 
@@ -39,7 +39,7 @@ func (a *App) runList(args []string) error {
 	if *rooms {
 		groups = filterGroups(groups, func(g hue.GroupView) bool { return g.Kind == hue.GroupRoom })
 	}
-	if names := fs.Args(); len(names) > 0 {
+	if names := positional; len(names) > 0 {
 		wanted := make(map[string]bool, len(names))
 		for _, n := range names {
 			wanted[strings.ToLower(strings.TrimSpace(n))] = true
@@ -71,59 +71,115 @@ func filterGroups(in []hue.GroupView, keep func(hue.GroupView) bool) []hue.Group
 	return out
 }
 
+// listColumns are the headers of the device table, in order.
+var listColumns = []string{"ROOM", "GROUP", "DEVICE", "TYPE", "STATE", "BRIGHT", "DETAIL"}
+
 func (a *App) printGroups(groups []hue.GroupView, onlyOn bool) {
 	now := a.now()
-	tw := tabwriter.NewWriter(a.Out, 0, 8, 2, ' ', 0)
 
+	rows := make([][]string, 0, 32)
 	totalLights, totalOn := 0, 0
-	for i, g := range groups {
-		if i > 0 {
-			fmt.Fprintln(tw)
-		}
-		on := g.OnCount()
-		totalLights += len(g.Lights)
-		totalOn += on
 
-		header := fmt.Sprintf("%s (%s)", g.Name, g.Kind)
-		fmt.Fprintf(tw, "%s\t%d lights, %d on\n", header, len(g.Lights), on)
+	for gi, g := range groups {
+		totalLights += len(g.Lights)
+		totalOn += g.OnCount()
+
+		// Blank line between rooms so each block reads on its own.
+		if gi > 0 {
+			rows = append(rows, nil)
+		}
 
 		for _, l := range g.Lights {
 			if onlyOn && !l.On {
 				continue
 			}
-			state := "off"
-			bright := "-"
+			state, bright := "off", "-"
 			if l.On {
 				state = "on"
 				if l.HasDimming {
 					bright = fmt.Sprintf("%.0f%%", l.Brightness)
 				}
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", state, bright, l.Name, l.Kind)
+			rows = append(rows, []string{
+				g.Name, g.Kind, l.Name, string(l.Kind), state, bright, "",
+			})
 		}
 		if onlyOn {
 			continue
 		}
+
 		for _, s := range g.Sensors {
 			detail := s.Describe(now)
 			if g.SensorsInherited {
 				detail += " (from room)"
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", "-", "-", s.Name, hue.KindSensor, detail)
+			rows = append(rows, []string{
+				g.Name, g.Kind, s.Name, string(hue.KindSensor), "-", "-", detail,
+			})
 		}
 		for _, c := range g.Controls {
 			detail := c.Product
 			if c.Buttons > 0 {
 				detail = strings.TrimSpace(fmt.Sprintf("%s (%d buttons)", detail, c.Buttons))
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", "-", "-", c.Name, c.Kind, detail)
+			rows = append(rows, []string{
+				g.Name, g.Kind, c.Name, string(c.Kind), "-", "-", detail,
+			})
 		}
 	}
 
-	if len(groups) == 0 {
-		fmt.Fprintln(tw, "no rooms or zones found")
-	} else {
-		fmt.Fprintf(tw, "\n%d rooms/zones, %d lights, %d on\n", len(groups), totalLights, totalOn)
+	if len(rows) == 0 {
+		fmt.Fprintln(a.Out, "nothing to show")
+		return
 	}
-	tw.Flush()
+
+	writeTable(a.Out, listColumns, rows)
+	fmt.Fprintf(a.Out, "\n%d rooms/zones, %d lights, %d on\n", len(groups), totalLights, totalOn)
+}
+
+// writeTable prints a header, a dashed rule and the rows, each column padded to
+// its widest value. Trailing empty columns are left off so rows do not end in
+// a run of spaces.
+func writeTable(w interface {
+	Write([]byte) (int, error)
+}, headers []string, rows [][]string) {
+	widths := make([]int, len(headers))
+	for i, h := range headers {
+		widths[i] = len(h)
+	}
+	for _, row := range rows {
+		for i, cell := range row {
+			if i < len(widths) && len(cell) > widths[i] {
+				widths[i] = len(cell)
+			}
+		}
+	}
+
+	rule := make([]string, len(headers))
+	for i, n := range widths {
+		rule[i] = strings.Repeat("-", n)
+	}
+
+	for _, line := range append([][]string{headers, rule}, rows...) {
+		fmt.Fprintln(w, strings.TrimRight(padCells(line, widths), " "))
+	}
+}
+
+// padCells joins one row, padding every cell but the last to its column width.
+func padCells(cells []string, widths []int) string {
+	var b strings.Builder
+	for i, cell := range cells {
+		if i > 0 {
+			b.WriteString("  ")
+		}
+		if i == len(cells)-1 {
+			b.WriteString(cell)
+			continue
+		}
+		b.WriteString(cell)
+		if pad := widths[i] - len(cell); pad > 0 {
+			b.WriteString(strings.Repeat(" ", pad))
+		}
+	}
+	return b.String()
 }

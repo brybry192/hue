@@ -147,6 +147,27 @@ func commandDoc(name string) string {
 	return ""
 }
 
+// parseArgs parses flags that may be interspersed with positional arguments.
+//
+// Go's flag package stops at the first non-flag argument, which would make
+// `hue off Kitchen --no-dry-run` silently ignore the flag. Parsing repeatedly
+// and collecting the positionals as they appear keeps both orders working.
+func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			return nil, err
+		}
+		rest = fs.Args()
+		if len(rest) == 0 {
+			return positional, nil
+		}
+		positional = append(positional, rest[0])
+		rest = rest[1:]
+	}
+}
+
 // loadConfig reads the config, reporting a helpful error when it is unusable.
 func (a *App) loadConfig(path string) (config.Config, error) {
 	cfg, err := config.Load(path)

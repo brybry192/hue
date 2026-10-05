@@ -24,11 +24,12 @@ func (a *App) runSetState(args []string, on bool) error {
 	// Like sweep, changing lights is opt-in rather than the default.
 	dryRun := fs.Bool("dry-run", true, "report what would change without changing anything")
 	noDryRun := fs.Bool("no-dry-run", false, "actually change the lights")
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseArgs(fs, args)
+	if err != nil {
 		return ErrUsage
 	}
 	dry := *dryRun && !*noDryRun
-	target := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	target := strings.TrimSpace(strings.Join(positional, " "))
 	if target == "" {
 		fs.Usage()
 		return ErrUsage

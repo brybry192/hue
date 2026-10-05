@@ -80,6 +80,26 @@ func TestSwitchingOffResetsTheTimer(t *testing.T) {
 	}
 }
 
+func TestObserveForgetsUnreachableLights(t *testing.T) {
+	s := newStore(t)
+	s.Observe([]hue.LightView{light("a", true)}, base)
+
+	// Power cut: the bridge still says "on", but it cannot reach the light.
+	dead := light("a", true)
+	dead.Unreachable = true
+	s.Observe([]hue.LightView{dead}, base.Add(5*time.Minute))
+	if _, ok := s.OnSince("a"); ok {
+		t.Fatal("an unreachable light should be forgotten")
+	}
+
+	// Power back: the grace period starts again from now.
+	back := base.Add(30 * time.Minute)
+	s.Observe([]hue.LightView{light("a", true)}, back)
+	if got, _ := s.OnSince("a"); !got.Equal(back) {
+		t.Errorf("OnSince = %v, want %v", got, back)
+	}
+}
+
 func TestObserveForgetsLightsThatVanish(t *testing.T) {
 	s := newStore(t)
 	s.Observe([]hue.LightView{light("a", true), light("b", true)}, base)

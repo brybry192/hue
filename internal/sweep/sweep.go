@@ -161,10 +161,13 @@ func evaluate(g hue.GroupView, in Inputs, claimed map[string]bool) (*Action, []N
 		notes = append(notes, Note{Group: g.Name, Text: fmt.Sprintf(format, args...)})
 	}
 
-	eligible := eligibleLights(g, cfg.IncludePlugs)
+	eligible, unreachable := eligibleLights(g, cfg.IncludePlugs)
+	if len(unreachable) > 0 {
+		note("%s unreachable, ignored", strings.Join(unreachable, ", "))
+	}
 	total := len(eligible)
 	if total == 0 {
-		return nil, nil
+		return nil, notes
 	}
 
 	var on []hue.LightView
@@ -174,7 +177,7 @@ func evaluate(g hue.GroupView, in Inputs, claimed map[string]bool) (*Action, []N
 		}
 	}
 	if len(on) == 0 {
-		return nil, nil
+		return nil, notes
 	}
 
 	// Decide which rule applies. Motion evidence is stronger than a group
@@ -272,10 +275,21 @@ func pickRule(g hue.GroupView, cfg config.Sweep, on []hue.LightView, total int, 
 	return "", strings.Join(why, "; "), false
 }
 
-// eligibleLights returns the lights in a group the sweep is allowed to touch.
-func eligibleLights(g hue.GroupView, includePlugs bool) []hue.LightView {
-	out := make([]hue.LightView, 0, len(g.Lights))
+// eligibleLights returns the lights in a group the sweep is allowed to touch,
+// and the names of lights left out because the bridge cannot reach them.
+//
+// Unreachable lights are left out of the group entirely, not just spared: their
+// on/off state is stale, so counting them would distort the outlier fraction,
+// and a light with its power cut cannot be switched anyway.
+func eligibleLights(g hue.GroupView, includePlugs bool) (out []hue.LightView, unreachable []string) {
+	out = make([]hue.LightView, 0, len(g.Lights))
 	for _, l := range g.Lights {
+		if l.Unreachable {
+			if l.Kind == hue.KindLight || includePlugs {
+				unreachable = append(unreachable, l.Name)
+			}
+			continue
+		}
 		switch l.Kind {
 		case hue.KindLight:
 			out = append(out, l)
@@ -285,7 +299,7 @@ func eligibleLights(g hue.GroupView, includePlugs bool) []hue.LightView {
 			}
 		}
 	}
-	return out
+	return out, unreachable
 }
 
 // filterExcluded splits lights by the configured exclusion patterns, which are

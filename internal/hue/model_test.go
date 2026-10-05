@@ -190,6 +190,58 @@ func TestBuildSnapshotZoneUsesLightChildren(t *testing.T) {
 	}
 }
 
+func TestApplyConnectivity(t *testing.T) {
+	// One light in both a room and a zone has lost power; one is fine; one
+	// has no connectivity record at all.
+	devices := []Device{
+		lightDevice("dev-l1", "Sconce", "l1"),
+		lightDevice("dev-l2", "Desk", "l2"),
+		lightDevice("dev-l3", "Strip", "l3"),
+	}
+	lights := []Light{
+		lightRes("l1", "Sconce", true, 50),
+		lightRes("l2", "Desk", true, 50),
+		lightRes("l3", "Strip", false, 0),
+	}
+	rooms := []Group{{
+		ID: "r1", Type: "room", Metadata: Metadata{Name: "Study"},
+		Children: []ResourceRef{
+			{RID: "dev-l1", RType: "device"},
+			{RID: "dev-l2", RType: "device"},
+			{RID: "dev-l3", RType: "device"},
+		},
+	}}
+	zones := []Group{{
+		ID: "z1", Type: "zone", Metadata: Metadata{Name: "Desk Area"},
+		Children: []ResourceRef{{RID: "l1", RType: "light"}},
+	}}
+
+	snap := BuildSnapshot(rooms, zones, devices, lights, nil)
+	snap.ApplyConnectivity([]ZigbeeConnectivity{
+		{ID: "zc1", Owner: ResourceRef{RID: "dev-l1", RType: "device"}, Status: "connectivity_issue"},
+		{ID: "zc2", Owner: ResourceRef{RID: "dev-l2", RType: "device"}, Status: ConnectivityConnected},
+	})
+
+	want := map[string]bool{"l1": true, "l2": false, "l3": false}
+	for id, unreachable := range want {
+		if got := snap.Lights[id].Unreachable; got != unreachable {
+			t.Errorf("Lights[%s].Unreachable = %v, want %v", id, got, unreachable)
+		}
+	}
+	for _, g := range snap.Groups {
+		for _, l := range g.Lights {
+			if l.Unreachable != want[l.ID] {
+				t.Errorf("%s: %s.Unreachable = %v, want %v", g.Name, l.Name, l.Unreachable, want[l.ID])
+			}
+		}
+	}
+
+	office, _ := snap.Group("Study")
+	if n := office.OnCount(); n != 1 {
+		t.Errorf("OnCount = %d, want 1: the unreachable light's stale on must not count", n)
+	}
+}
+
 func TestBuildSnapshotSkipsDanglingReferences(t *testing.T) {
 	// A room that points at a device the bridge did not return must not panic.
 	rooms := []Group{{

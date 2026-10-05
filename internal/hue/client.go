@@ -260,6 +260,11 @@ func (c *Client) Motions(ctx context.Context) ([]Motion, error) {
 	return fetch[Motion](ctx, c, "motion")
 }
 
+// Connectivity lists the Zigbee connectivity status of every device.
+func (c *Client) Connectivity(ctx context.Context) ([]ZigbeeConnectivity, error) {
+	return fetch[ZigbeeConnectivity](ctx, c, "zigbee_connectivity")
+}
+
 // GroupedLights lists every grouped-light service.
 func (c *Client) GroupedLights(ctx context.Context) ([]GroupedLight, error) {
 	return fetch[GroupedLight](ctx, c, "grouped_light")

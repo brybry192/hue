@@ -193,6 +193,57 @@ func TestSweepGracePeriodNeedsTwoRuns(t *testing.T) {
 	}
 }
 
+func TestSweepLogFormat(t *testing.T) {
+	h := newHarness(t, `{"min_on_duration": "0s"}`)
+
+	out, _, err := h.run(t, "sweep", "--log", "--rooms", "Kitchen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `2026-10-01T12:00:00Z dry-run off group="Kitchen" rule=outlier light="Kitchen 1"
+2026-10-01T12:00:00Z dry-run swept lights=1 groups=1
+`
+	if out != want {
+		t.Errorf("--log output:\n%s\nwant:\n%s", out, want)
+	}
+
+	// A run with nothing to do is a single line, and a real run drops the
+	// dry-run marker.
+	out, _, err = h.run(t, "sweep", "--log", "--no-dry-run", "--rooms", "Lounge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "2026-10-01T12:00:00Z swept lights=0 groups=0\n"; out != want {
+		t.Errorf("quiet --log output = %q, want %q", out, want)
+	}
+}
+
+func TestSweepIgnoresUnreachableLights(t *testing.T) {
+	// Kitchen 1 is the Kitchen straggler, but its power has been cut. The
+	// bridge still reports it as on.
+	h := newHarness(t, `{"min_on_duration": "0s"}`)
+	h.bridge.cutPower("kitchen1")
+
+	out, _, err := h.run(t, "sweep", "--no-dry-run", "-v", "--rooms", "Kitchen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := h.bridge.Writes(); len(w) != 0 {
+		t.Fatalf("an unreachable light should not be switched, got %v", w)
+	}
+	if !strings.Contains(out, "Kitchen 1 unreachable, ignored") {
+		t.Errorf("-v should say why Kitchen 1 was ignored:\n%s", out)
+	}
+
+	out, _, err = h.run(t, "ls", "Kitchen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row := "Kitchen room Kitchen 1 light ? - unreachable (no power?)"; !hasRow(out, row) {
+		t.Errorf("ls should show Kitchen 1 as unreachable:\n%s", out)
+	}
+}
+
 func TestSweepForceSkipsGracePeriod(t *testing.T) {
 	h := newHarness(t, `{"min_on_duration": "10m"}`)
 	if _, _, err := h.run(t, "sweep", "--no-dry-run", "--force"); err != nil {
@@ -543,5 +594,25 @@ func TestListAliasesToLs(t *testing.T) {
 	}
 	if !strings.Contains(out, "Kitchen") {
 		t.Errorf("'list' should behave like 'ls':\n%s", out)
+	}
+}
+
+func TestWriteTablePadsByCharacter(t *testing.T) {
+	// A curly apostrophe is three bytes but one column wide.
+	var b strings.Builder
+	writeTable(&b, []string{"ROOM", "STATE"}, [][]string{
+		{"Café", "on"},
+		{"Kitchen", "off"},
+	})
+	// column is the character offset of the second column in a line.
+	column := func(line string) int {
+		return len([]rune(line[:strings.LastIndex(line, " ")+1]))
+	}
+	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+	want := column(lines[0])
+	for _, line := range lines[2:] {
+		if got := column(line); got != want {
+			t.Errorf("second column of %q starts at %d, want %d", line, got, want)
+		}
 	}
 }

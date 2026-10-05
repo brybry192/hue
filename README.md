@@ -83,11 +83,17 @@ disables it.
 
 - **Dry run by default.** Every command that changes a light previews instead;
   `--no-dry-run` applies.
-- **Smart plugs are skipped** unless `include_plugs` is true, because a plug may
-  be powering a fridge rather than a lamp.
+- **Smart plugs are swept like lights** by default. If a plug powers something
+  that must stay on, such as a fridge, set `include_plugs` to false or list it
+  in `exclude_lights`.
 - **`exclude_lights`** never gets switched off, matched on light or device name
   with shell-style wildcards.
 - A light in both a room and a zone is **switched off once**, not twice.
+- **Unreachable lights are ignored.** A light whose power is cut at the wall
+  keeps its last reported state on the bridge, often "on". The sweep checks
+  each device's Zigbee connectivity and leaves unreachable lights out
+  entirely: they are not switched, and they do not count toward the group's
+  size or its on-count. `hue ls` shows them as `?` / `unreachable`.
 
 ## Install
 
@@ -150,6 +156,7 @@ hue sweep --rooms Kitchen,Outside    # override the configured scope
 hue sweep --idle 30m --min-on 20m    # override thresholds for one run
 hue sweep --force                # ignore the grace period
 hue sweep -v                     # explain the groups it left alone
+hue sweep --log                  # one timestamped line per event, for log files
 hue sweep --json                 # the full plan and results as JSON
 hue off Kitchen --no-dry-run     # flags may come before or after the target
 hue probe                        # what resource types does this bridge have?
@@ -184,7 +191,7 @@ precedence: `--config`, `$HUE_CONFIG`, `$XDG_CONFIG_HOME/hue/config.json`,
     "rooms": ["Kitchen", "Hallway", "Outside"],
     "exclude_lights": ["Night Light", "porch *"],
     "min_on_duration": "10m",
-    "include_plugs": false,
+    "include_plugs": true,
     "outlier": {
       "enabled": true,
       "min_group_size": 3,
@@ -204,7 +211,7 @@ precedence: `--config`, `$HUE_CONFIG`, `$XDG_CONFIG_HOME/hue/config.json`,
 | `sweep.rooms` | `[]` (everything) | Rooms **and zones** to sweep, by name, case-insensitive |
 | `sweep.exclude_lights` | `[]` | Never switch these off; wildcards allowed |
 | `sweep.min_on_duration` | `10m` | Grace period before a light may be swept |
-| `sweep.include_plugs` | `false` | Allow smart plugs to be switched off |
+| `sweep.include_plugs` | `true` | Allow smart plugs to be switched off |
 | `sweep.outlier.*` | see above | The outlier rule's thresholds |
 | `sweep.motion.idle_threshold` | `15m` | How long a room must be still |
 
@@ -234,6 +241,7 @@ A `launchd` agent at `~/Library/LaunchAgents/com.brybry192.hue.sweep.plist`:
     <string>/usr/local/bin/hue</string>
     <string>sweep</string>
     <string>--no-dry-run</string>
+    <string>--log</string>
   </array>
   <key>StartInterval</key><integer>300</integer>
   <key>StandardOutPath</key><string>/tmp/hue-sweep.log</string>
@@ -249,8 +257,19 @@ launchctl load ~/Library/LaunchAgents/com.brybry192.hue.sweep.plist
 Or cron, every five minutes:
 
 ```cron
-*/5 * * * * /usr/local/bin/hue sweep --no-dry-run >> /tmp/hue-sweep.log 2>&1
+*/5 * * * * /usr/local/bin/hue sweep --no-dry-run --log >> /tmp/hue-sweep.log 2>&1
 ```
+
+`--log` writes one line per light switched off, then a summary, each
+starting with the time of the sweep. A run with nothing to do is one line:
+
+```
+2026-10-05T13:12:03Z off group="Study" rule=outlier light="Lamp" on_for=12m
+2026-10-05T13:12:03Z swept lights=1 groups=1
+2026-10-05T13:17:03Z swept lights=0 groups=0
+```
+
+Add `-v` to log why each group was left alone as `note` lines.
 
 Note that a scheduled job needs its own Local Network permission on macOS — see
 [Troubleshooting](#troubleshooting).

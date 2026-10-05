@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/brybry192/hue/internal/hue"
 )
@@ -90,18 +91,22 @@ func (a *App) printGroups(groups []hue.GroupView, onlyOn bool) {
 		}
 
 		for _, l := range g.Lights {
-			if onlyOn && !l.On {
+			if onlyOn && (!l.On || l.Unreachable) {
 				continue
 			}
-			state, bright := "off", "-"
-			if l.On {
+			state, bright, detail := "off", "-", ""
+			switch {
+			case l.Unreachable:
+				// The bridge's on/off value is stale, so do not repeat it.
+				state, detail = "?", "unreachable (no power?)"
+			case l.On:
 				state = "on"
 				if l.HasDimming {
 					bright = fmt.Sprintf("%.0f%%", l.Brightness)
 				}
 			}
 			rows = append(rows, []string{
-				g.Name, g.Kind, l.Name, string(l.Kind), state, bright, "",
+				g.Name, g.Kind, l.Name, string(l.Kind), state, bright, detail,
 			})
 		}
 		if onlyOn {
@@ -149,8 +154,8 @@ func writeTable(w interface {
 	}
 	for _, row := range rows {
 		for i, cell := range row {
-			if i < len(widths) && len(cell) > widths[i] {
-				widths[i] = len(cell)
+			if i < len(widths) && utf8.RuneCountInString(cell) > widths[i] {
+				widths[i] = utf8.RuneCountInString(cell)
 			}
 		}
 	}
@@ -177,7 +182,7 @@ func padCells(cells []string, widths []int) string {
 			continue
 		}
 		b.WriteString(cell)
-		if pad := widths[i] - len(cell); pad > 0 {
+		if pad := widths[i] - utf8.RuneCountInString(cell); pad > 0 {
 			b.WriteString(strings.Repeat(" ", pad))
 		}
 	}

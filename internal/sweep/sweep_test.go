@@ -380,17 +380,17 @@ func TestPlugHandling(t *testing.T) {
 		light("l4", "Spot", false),
 	})
 
-	t.Run("plugs are left alone by default", func(t *testing.T) {
-		plan := build(t, Inputs{Groups: []hue.GroupView{group}, Cfg: baseCfg()})
+	t.Run("include_plugs false leaves them alone", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.IncludePlugs = false
+		plan := build(t, Inputs{Groups: []hue.GroupView{group}, Cfg: cfg})
 		if n := plan.LightCount(); n != 0 {
 			t.Fatalf("switched off %d lights, want 0", n)
 		}
 	})
 
-	t.Run("include_plugs lets them be swept", func(t *testing.T) {
-		cfg := baseCfg()
-		cfg.IncludePlugs = true
-		plan := build(t, Inputs{Groups: []hue.GroupView{group}, Cfg: cfg})
+	t.Run("plugs are swept by default", func(t *testing.T) {
+		plan := build(t, Inputs{Groups: []hue.GroupView{group}, Cfg: baseCfg()})
 		if n := plan.LightCount(); n != 1 {
 			t.Fatalf("switched off %d lights, want 1", n)
 		}
@@ -407,9 +407,61 @@ func TestPlugHandling(t *testing.T) {
 			light("l1", "Nook Lamp", true),
 			light("l2", "Nook Spot", false),
 		})
-		plan := build(t, Inputs{Groups: []hue.GroupView{g}, Cfg: baseCfg()})
+		cfg := baseCfg()
+		cfg.IncludePlugs = false
+		plan := build(t, Inputs{Groups: []hue.GroupView{g}, Cfg: cfg})
 		if n := plan.LightCount(); n != 0 {
 			t.Fatalf("switched off %d lights, want 0", n)
+		}
+	})
+}
+
+func TestUnreachableLights(t *testing.T) {
+	unreachable := func(l hue.LightView) hue.LightView {
+		l.Unreachable = true
+		return l
+	}
+
+	t.Run("a stale on light without power is not swept", func(t *testing.T) {
+		// The bridge still reports Sconce as on, but it cannot reach it.
+		g := room("Study", []hue.LightView{
+			unreachable(light("l1", "Sconce", true)),
+			light("l2", "Desk", false),
+			light("l3", "Shelf", false),
+			light("l4", "Spot", false),
+		})
+		plan := build(t, Inputs{Groups: []hue.GroupView{g}, Cfg: baseCfg()})
+		if n := plan.LightCount(); n != 0 {
+			t.Fatalf("switched off %v, want nothing", targetNames(plan))
+		}
+		if len(plan.Notes) != 1 || !strings.Contains(plan.Notes[0].Text, "Sconce unreachable") {
+			t.Errorf("notes = %+v, want one saying Sconce is unreachable", plan.Notes)
+		}
+	})
+
+	t.Run("unreachable lights do not count toward the group", func(t *testing.T) {
+		// 1 of 4 reachable lights on would be an outlier. Counting the two
+		// dead lights as part of the group would wrongly make it 1 of 6.
+		lights := lightsOnOf(4, 1)
+		lights = append(lights,
+			unreachable(light("d1", "Dead 1", true)),
+			unreachable(light("d2", "Dead 2", false)))
+		plan := build(t, Inputs{Groups: []hue.GroupView{room("West", lights)}, Cfg: baseCfg()})
+		if got := targetNames(plan); len(got) != 1 || got[0] != "Light 1" {
+			t.Fatalf("switched off %v, want [Light 1]", got)
+		}
+		if a := plan.Actions[0]; a.OnCount != 1 || a.Total != 4 {
+			t.Errorf("counted %d of %d on, want 1 of 4", a.OnCount, a.Total)
+		}
+	})
+
+	t.Run("unreachable plugs are not mentioned unless plugs are swept", func(t *testing.T) {
+		g := room("Study", append(lightsOnOf(3, 0), unreachable(plug("p1", "Fridge", true))))
+		cfg := baseCfg()
+		cfg.IncludePlugs = false
+		plan := build(t, Inputs{Groups: []hue.GroupView{g}, Cfg: cfg})
+		if len(plan.Notes) != 0 {
+			t.Errorf("notes = %+v, want none", plan.Notes)
 		}
 	})
 }

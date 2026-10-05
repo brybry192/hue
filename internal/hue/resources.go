@@ -105,3 +105,17 @@ type BridgeInfo struct {
 		TimeZone string `json:"time_zone"`
 	} `json:"time_zone"`
 }
+
+// ZigbeeConnectivity reports whether the bridge can reach a Zigbee device.
+// Owner is the device. A light with hard power cut, such as one on a wall
+// switch, keeps its last reported state but shows up here as unreachable.
+type ZigbeeConnectivity struct {
+	ID     string      `json:"id"`
+	Owner  ResourceRef `json:"owner"`
+	Status string      `json:"status"`
+}
+
+// ConnectivityConnected is the only status in which the bridge can both hear
+// from and send commands to a device. The others are "connectivity_issue",
+// "disconnected" and "unidirectional_incoming".
+const ConnectivityConnected = "connected"

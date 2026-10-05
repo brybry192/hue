@@ -36,6 +36,11 @@ type LightView struct {
 	On         bool       `json:"on"`
 	Brightness float64    `json:"brightness,omitempty"`
 	HasDimming bool       `json:"-"`
+	// Unreachable is true when the bridge cannot talk to the light, usually
+	// because its power is cut. On and Brightness are then the last values
+	// the bridge heard and cannot be trusted, and the light cannot be
+	// switched anyway.
+	Unreachable bool `json:"unreachable,omitempty"`
 }
 
 // SensorView is one motion service.
@@ -74,11 +79,12 @@ type GroupView struct {
 	SensorsInherited bool `json:"sensors_inherited,omitempty"`
 }
 
-// OnCount counts lights that are currently on.
+// OnCount counts lights that are currently on. Unreachable lights are not
+// counted, since their reported state is stale.
 func (g GroupView) OnCount() int {
 	n := 0
 	for _, l := range g.Lights {
-		if l.On {
+		if l.On && !l.Unreachable {
 			n++
 		}
 	}
@@ -151,7 +157,37 @@ func (c *Client) Snapshot(ctx context.Context) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	return BuildSnapshot(rooms, zones, devices, lights, motions), nil
+	conns, err := c.Connectivity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snap := BuildSnapshot(rooms, zones, devices, lights, motions)
+	snap.ApplyConnectivity(conns)
+	return snap, nil
+}
+
+// ApplyConnectivity marks every light whose device the bridge cannot reach.
+// A device with no connectivity record is assumed reachable.
+func (s *Snapshot) ApplyConnectivity(conns []ZigbeeConnectivity) {
+	down := make(map[string]bool)
+	for _, c := range conns {
+		if c.Status != ConnectivityConnected {
+			down[c.Owner.RID] = true
+		}
+	}
+	if len(down) == 0 {
+		return
+	}
+	for gi := range s.Groups {
+		for li := range s.Groups[gi].Lights {
+			l := &s.Groups[gi].Lights[li]
+			l.Unreachable = down[l.DeviceID]
+		}
+	}
+	for id, l := range s.Lights {
+		l.Unreachable = down[l.DeviceID]
+		s.Lights[id] = l
+	}
 }
 
 // BuildSnapshot assembles a Snapshot from raw resources. It is separated from

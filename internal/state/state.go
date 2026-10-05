@@ -99,12 +99,13 @@ func (s *Store) Path() string { return s.path }
 //
 // Lights that are on gain an OnSince on first sight and keep it afterwards.
 // Lights that are off are forgotten, so the next time one comes on its timer
-// restarts.
+// restarts. So are unreachable lights, whose reported state is stale: a light
+// that regains power starts its grace period afresh.
 func (s *Store) Observe(lights []hue.LightView, now time.Time) {
 	seen := make(map[string]bool, len(lights))
 	for _, l := range lights {
 		seen[l.ID] = true
-		if !l.On {
+		if !l.On || l.Unreachable {
 			delete(s.d.Lights, l.ID)
 			continue
 		}

@@ -65,8 +65,8 @@ func TestDefaults(t *testing.T) {
 	if !c.Sweep.Motion.IsEnabled() || !c.Sweep.Outlier.IsEnabled() {
 		t.Error("both rules should be enabled by default")
 	}
-	if c.Sweep.IncludePlugs {
-		t.Error("plugs should be excluded by default")
+	if !c.Sweep.IncludePlugs {
+		t.Error("plugs should be included by default")
 	}
 	if c.Sweep.Outlier.MinGroupSize != 3 || c.Sweep.Outlier.MaxOnCount != 2 {
 		t.Errorf("unexpected outlier defaults: %+v", c.Sweep.Outlier)

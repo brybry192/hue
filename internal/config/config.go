@@ -93,8 +93,9 @@ type Sweep struct {
 	// sweep will switch it off. It stops the sweep fighting someone who just
 	// turned a light on, at the cost of needing two runs to act.
 	MinOnDuration Duration `json:"min_on_duration"`
-	// IncludePlugs allows smart plugs to be switched off. Off by default,
-	// since a plug may be powering something that is not a lamp.
+	// IncludePlugs allows smart plugs to be switched off. On by default; turn
+	// it off, or list the plug in exclude_lights, if it powers something
+	// that must stay on.
 	IncludePlugs bool    `json:"include_plugs"`
 	Outlier      Outlier `json:"outlier"`
 	Motion       Motion  `json:"motion"`
@@ -124,7 +125,7 @@ func Default() Config {
 		Sweep: Sweep{
 			Rooms:         []string{},
 			MinOnDuration: Duration(10 * time.Minute),
-			IncludePlugs:  false,
+			IncludePlugs:  true,
 			Outlier: Outlier{
 				Enabled:       boolPtr(true),
 				MinGroupSize:  3,

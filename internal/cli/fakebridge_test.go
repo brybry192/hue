@@ -27,6 +27,7 @@ type fakeBridge struct {
 	devices []hue.Device
 	lights  []hue.Light
 	motions []hue.Motion
+	conns   []hue.ZigbeeConnectivity
 
 	// writes records PUTs as "light/<id>=off" or "grouped_light/<id>=on".
 	writes []string
@@ -69,6 +70,11 @@ func (f *fakeBridge) handler() http.Handler {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.serveList(w, f.motions)
+	})
+	mux.HandleFunc("/clip/v2/resource/zigbee_connectivity", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.serveList(w, f.conns)
 	})
 	mux.HandleFunc("/clip/v2/resource/bridge", func(w http.ResponseWriter, r *http.Request) {
 		f.serveList(w, []hue.BridgeInfo{{ID: "b1", BridgeID: "001788FFFE000001"}})
@@ -147,6 +153,17 @@ func (f *fakeBridge) handleWrite(w http.ResponseWriter, r *http.Request, rtype, 
 		}
 	}
 	f.serveList(w, []any{})
+}
+
+// cutPower marks a device unreachable, the way the bridge reports a light
+// whose wall switch is off. Its last on/off state is left as it was.
+func (f *fakeBridge) cutPower(devID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.conns = append(f.conns, hue.ZigbeeConnectivity{
+		ID: "zc-" + devID, Owner: hue.ResourceRef{RID: devID, RType: "device"},
+		Status: "connectivity_issue",
+	})
 }
 
 // newFakeBridge builds a bridge with a deliberately varied topology:

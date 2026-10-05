@@ -39,6 +39,7 @@ func (a *App) runSweep(args []string) error {
 	force := fs.Bool("force", false, "ignore the min-on grace period")
 	asJSON := fs.Bool("json", false, "emit JSON")
 	verbose := fs.Bool("v", false, "explain groups that were left alone")
+	asLog := fs.Bool("log", false, "one timestamped line per event, for scheduled runs")
 	statePath := fs.String("state", "", "sweep state file path (default "+defaultStatePathForHelp()+")")
 	noState := fs.Bool("no-state", false, "do not read or write the state file")
 	if err := fs.Parse(args); err != nil {
@@ -116,6 +117,10 @@ func (a *App) runSweep(args []string) error {
 		return actErr
 	}
 
+	if *asLog {
+		a.printPlanLog(plan, results, dry, *verbose)
+		return actErr
+	}
 	a.printPlan(plan, results, dry, *verbose)
 	return actErr
 }
@@ -264,6 +269,40 @@ func (a *App) printPlan(plan sweep.Plan, results []result, dryRun, verbose bool)
 			fmt.Fprintln(a.Out, "this was a dry run; re-run with --no-dry-run to switch them off")
 		}
 	}
+}
+
+// printPlanLog writes the plan as logfmt-style lines, each starting with the
+// sweep time so a log file reads on its own. A run that switches nothing off
+// is a single line.
+//
+//	2026-10-05T13:12:03Z dry-run off group="Study" rule=outlier light="Lamp" on_for=12m
+//	2026-10-05T13:12:03Z dry-run swept lights=1 groups=1
+func (a *App) printPlanLog(plan sweep.Plan, results []result, dryRun, verbose bool) {
+	prefix := plan.Now.Format(time.RFC3339)
+	if dryRun {
+		prefix += " dry-run"
+	}
+
+	for _, w := range plan.Warnings {
+		fmt.Fprintf(a.Err, "%s warning msg=%q\n", prefix, w)
+	}
+	for _, r := range results {
+		line := fmt.Sprintf("%s off group=%q rule=%s light=%q", prefix, r.Group, r.Rule, r.Name)
+		if r.OnFor != "" {
+			line += " on_for=" + r.OnFor
+		}
+		if r.Error != "" {
+			line = fmt.Sprintf("%s failed group=%q rule=%s light=%q error=%q",
+				prefix, r.Group, r.Rule, r.Name, r.Error)
+		}
+		fmt.Fprintln(a.Out, line)
+	}
+	if verbose {
+		for _, n := range plan.Notes {
+			fmt.Fprintf(a.Out, "%s note group=%q msg=%q\n", prefix, n.Group, n.Text)
+		}
+	}
+	fmt.Fprintf(a.Out, "%s swept lights=%d groups=%d\n", prefix, plan.LightCount(), len(plan.Actions))
 }
 
 func plural(n int, one, many string) string {

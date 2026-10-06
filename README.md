@@ -572,3 +572,4 @@ address directly instead: `hue auth --bridge 192.0.2.10`.
 ## License
 
 MIT
+

@@ -14,6 +14,7 @@ import (
 // resource types this client does not model yet. Rather than guessing, look.
 func (a *App) runProbe(args []string) error {
 	fs, cfgPath := a.newFlagSet("probe", "probe [flags] [resource-type]")
+	which := fs.String("bridge", "", "bridge name or address, when several are configured")
 	positional, err := parseArgs(fs, args)
 	if err != nil {
 		return ErrUsage
@@ -23,10 +24,15 @@ func (a *App) runProbe(args []string) error {
 	if err != nil {
 		return err
 	}
-	client, err := a.client(cfg)
+	h, err := a.home(cfg)
 	if err != nil {
 		return err
 	}
+	b, err := h.pick(*which)
+	if err != nil {
+		return err
+	}
+	client := b.client
 
 	ctx, cancel := a.context()
 	defer cancel()

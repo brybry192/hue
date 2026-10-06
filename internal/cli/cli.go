@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/brybry192/hue/internal/config"
-	"github.com/brybry192/hue/internal/hue"
 )
 
 // Version is overridden at build time with -ldflags.
@@ -113,8 +112,8 @@ Getting started:
 Environment:
   HUE_CONFIG          config file path
   HUE_STATE           sweep state file path
-  HUE_BRIDGE_HOST     bridge address, overriding the config
-  HUE_APP_KEY         bridge application key, overriding the config
+  HUE_BRIDGE_HOST     bridge address, overriding the config (one bridge only)
+  HUE_APP_KEY         bridge application key, overriding the config (one bridge only)
 `)
 }
 
@@ -175,23 +174,6 @@ func (a *App) loadConfig(path string) (config.Config, error) {
 		return cfg, err
 	}
 	return cfg, nil
-}
-
-// client builds a bridge client, insisting on a host and key first.
-func (a *App) client(cfg config.Config) (*hue.Client, error) {
-	if cfg.Bridge.Host == "" {
-		return nil, errors.New("no bridge configured; run 'hue auth' (or set HUE_BRIDGE_HOST)")
-	}
-	if cfg.Bridge.AppKey == "" {
-		return nil, errors.New("no application key configured; run 'hue auth' (or set HUE_APP_KEY)")
-	}
-	return hue.New(hue.Options{
-		Host:       cfg.Bridge.Host,
-		AppKey:     cfg.Bridge.AppKey,
-		CertSHA256: cfg.Bridge.CertSHA256,
-		Insecure:   cfg.Bridge.Insecure,
-		Timeout:    cfg.Bridge.Timeout.Duration(),
-	}), nil
 }
 
 // context returns a context cancelled on interrupt, so a sweep can be stopped

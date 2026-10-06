@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -91,8 +92,8 @@ func TestLoadMissingFileReturnsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a missing config should not be an error: %v", err)
 	}
-	if cfg.Bridge.Host != "" {
-		t.Errorf("host = %q, want empty", cfg.Bridge.Host)
+	if len(cfg.Bridges) != 0 {
+		t.Errorf("bridges = %+v, want none", cfg.Bridges)
 	}
 	if cfg.Sweep.Motion.IdleThreshold.Duration() != 15*time.Minute {
 		t.Error("defaults were not applied")
@@ -119,8 +120,12 @@ func TestLoadPartialFileKeepsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Bridge.Host != "192.0.2.10" || cfg.Bridge.AppKey != "abc123" {
-		t.Errorf("bridge = %+v", cfg.Bridge)
+	// The old single "bridge" key is read as a one-bridge list.
+	if len(cfg.Bridges) != 1 || cfg.Bridges[0].Host != "192.0.2.10" || cfg.Bridges[0].AppKey != "abc123" {
+		t.Errorf("bridges = %+v", cfg.Bridges)
+	}
+	if cfg.LegacyBridge != nil {
+		t.Error("the legacy bridge should be cleared after loading")
 	}
 	if got := cfg.Sweep.Motion.IdleThreshold.Duration(); got != 25*time.Minute {
 		t.Errorf("idle threshold = %v, want 25m", got)
@@ -165,6 +170,9 @@ func TestLoadRejectsBadConfig(t *testing.T) {
 		"fraction above one":    `{"sweep": {"outlier": {"max_on_fraction": 1.5}}}`,
 		"negative group size":   `{"sweep": {"outlier": {"min_group_size": -1}}}`,
 		"negative grace period": `{"sweep": {"min_on_duration": "-5m"}}`,
+		"unnamed second bridge": `{"bridges": [{"name": "main", "host": "a"}, {"host": "b"}]}`,
+		"duplicate bridge name": `{"bridges": [{"name": "main", "host": "a"}, {"name": "MAIN", "host": "b"}]}`,
+		"bridge and bridges":    `{"bridge": {"host": "a"}, "bridges": [{"host": "b"}]}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -193,11 +201,33 @@ func TestEnvOverridesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Bridge.Host != "192.0.2.10" {
-		t.Errorf("host = %q, want the environment value", cfg.Bridge.Host)
+	if cfg.Bridges[0].Host != "192.0.2.10" {
+		t.Errorf("host = %q, want the environment value", cfg.Bridges[0].Host)
 	}
-	if cfg.Bridge.AppKey != "fromenv" {
-		t.Errorf("app key = %q, want the environment value", cfg.Bridge.AppKey)
+	if cfg.Bridges[0].AppKey != "fromenv" {
+		t.Errorf("app key = %q, want the environment value", cfg.Bridges[0].AppKey)
+	}
+}
+
+func TestEnvIsRefusedWithSeveralBridges(t *testing.T) {
+	clearEnv(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{"bridges": [{"name": "main", "host": "a"}, {"name": "annex", "host": "b"}]}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HUE_BRIDGE_HOST", "c")
+	if _, err := Load(path); err == nil {
+		t.Fatal("HUE_BRIDGE_HOST is ambiguous with two bridges and should be refused")
+	}
+}
+
+func TestFindBridge(t *testing.T) {
+	cfg := Config{Bridges: []Bridge{{Name: "main", Host: "10.0.0.1"}, {Name: "annex", Host: "10.0.0.2"}}}
+	for in, want := range map[string]int{"ANNEX": 1, "10.0.0.1": 0, "nope": -1, "": -1} {
+		if got := cfg.FindBridge(in); got != want {
+			t.Errorf("FindBridge(%q) = %d, want %d", in, got, want)
+		}
 	}
 }
 
@@ -206,9 +236,11 @@ func TestSaveRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "config.json")
 
 	cfg := Default()
-	cfg.Bridge.Host = "192.0.2.10"
-	cfg.Bridge.AppKey = "secret-key"
-	cfg.Bridge.CertSHA256 = "aabbcc"
+	cfg.Bridges = []Bridge{
+		{Name: "main", Host: "192.0.2.10", AppKey: "secret-key", CertSHA256: "aabbcc"},
+		{Name: "annex", Host: "192.0.2.11", AppKey: "other-key"},
+	}
+	cfg.RoomAliases = map[string]string{"Yard": "Terrace"}
 	cfg.Sweep.Rooms = []string{"Kitchen"}
 	if err := cfg.Save(path); err != nil {
 		t.Fatal(err)
@@ -227,8 +259,14 @@ func TestSaveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.Bridge != cfg.Bridge {
-		t.Errorf("bridge round trip: got %+v want %+v", again.Bridge, cfg.Bridge)
+	if len(again.Bridges) != 2 || again.Bridges[0] != cfg.Bridges[0] || again.Bridges[1] != cfg.Bridges[1] {
+		t.Errorf("bridges round trip: got %+v want %+v", again.Bridges, cfg.Bridges)
+	}
+	if again.RoomAliases["Yard"] != "Terrace" {
+		t.Errorf("room aliases round trip: %v", again.RoomAliases)
+	}
+	if data, _ := os.ReadFile(path); strings.Contains(string(data), `"bridge":`) {
+		t.Errorf("the legacy bridge key should not be written:\n%s", data)
 	}
 	if len(again.Sweep.Rooms) != 1 || again.Sweep.Rooms[0] != "Kitchen" {
 		t.Errorf("rooms round trip: %v", again.Sweep.Rooms)

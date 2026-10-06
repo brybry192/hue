@@ -39,7 +39,7 @@ func (a *App) runSetState(args []string, on bool) error {
 	if err != nil {
 		return err
 	}
-	client, err := a.client(cfg)
+	h, err := a.home(cfg)
 	if err != nil {
 		return err
 	}
@@ -47,22 +47,23 @@ func (a *App) runSetState(args []string, on bool) error {
 	ctx, cancel := a.context()
 	defer cancel()
 
-	snap, err := client.Snapshot(ctx)
+	snap, failed, err := h.snapshot(ctx)
 	if err != nil {
 		return err
 	}
+	a.warnFailed(failed)
 
 	if !*asLight {
 		if group, ok := snap.Group(target); ok {
-			return a.setGroup(ctx, client, group, on, dry)
+			return a.setGroup(ctx, h, group, on, dry)
 		}
 	}
-	return a.setLightsByName(ctx, client, snap, target, on, *asLight, dry)
+	return a.setLightsByName(ctx, h, snap, target, on, *asLight, dry)
 }
 
-// setGroup prefers the group's grouped-light service, which changes every
-// light in one request.
-func (a *App) setGroup(ctx context.Context, client *hue.Client, group hue.GroupView, on, dry bool) error {
+// setGroup prefers the group's grouped-light services, which change every
+// light a bridge has in the group with one request per bridge.
+func (a *App) setGroup(ctx context.Context, h *home, group hue.GroupView, on, dry bool) error {
 	if len(group.Lights) == 0 {
 		return fmt.Errorf("%s (%s) has no lights", group.Name, group.Kind)
 	}
@@ -72,19 +73,30 @@ func (a *App) setGroup(ctx context.Context, client *hue.Client, group hue.GroupV
 		a.dryRunHint()
 		return nil
 	}
-	if group.GroupedLightID != "" {
-		if err := client.SetGroupOn(ctx, group.GroupedLightID, on); err != nil {
-			return err
+	if groupedCoversAll(group) {
+		for _, ref := range group.GroupedLights {
+			client, err := h.client(ref.Bridge)
+			if err == nil {
+				err = client.SetGroupOn(ctx, ref.ID, on)
+			}
+			if err != nil {
+				return err
+			}
 		}
 		fmt.Fprintf(a.Out, "%s %s (%s): %d lights\n", stateWord(on), group.Name, group.Kind, len(group.Lights))
 		return nil
 	}
 
-	// Fall back to individual lights for a group with no grouped-light
-	// service, which should not happen but is cheap to support.
+	// Fall back to individual lights when some bridge's part of the group
+	// has no grouped-light service, which should not happen but is cheap to
+	// support.
 	var failed int
 	for _, l := range group.Lights {
-		if err := client.SetLightOn(ctx, l.ID, on); err != nil {
+		client, err := h.client(l.Bridge)
+		if err == nil {
+			err = client.SetLightOn(ctx, l.ID, on)
+		}
+		if err != nil {
 			fmt.Fprintf(a.Err, "hue: %s: %v\n", l.Name, err)
 			failed++
 		}
@@ -103,7 +115,7 @@ func (a *App) setGroup(ctx context.Context, client *hue.Client, group hue.GroupV
 
 // setLightsByName changes every light whose name matches, which handles both
 // an explicit --light and the "not a room" fallback.
-func (a *App) setLightsByName(ctx context.Context, client *hue.Client, snap *hue.Snapshot, target string, on, explicit, dry bool) error {
+func (a *App) setLightsByName(ctx context.Context, h *home, snap *hue.Snapshot, target string, on, explicit, dry bool) error {
 	want := strings.ToLower(target)
 	var matches []hue.LightView
 	for _, l := range snap.Lights {
@@ -128,7 +140,11 @@ func (a *App) setLightsByName(ctx context.Context, client *hue.Client, snap *hue
 
 	var failed int
 	for _, l := range matches {
-		if err := client.SetLightOn(ctx, l.ID, on); err != nil {
+		client, err := h.client(l.Bridge)
+		if err == nil {
+			err = client.SetLightOn(ctx, l.ID, on)
+		}
+		if err != nil {
 			fmt.Fprintf(a.Err, "hue: %s: %v\n", l.Name, err)
 			failed++
 			continue
@@ -144,6 +160,22 @@ func (a *App) setLightsByName(ctx context.Context, client *hue.Client, snap *hue
 		return errors.New("some lights could not be changed")
 	}
 	return nil
+}
+
+// groupedCoversAll reports whether every bridge holding one of the group's
+// lights has a grouped-light service for it, so the group can be switched
+// with one request per bridge.
+func groupedCoversAll(g hue.GroupView) bool {
+	has := make(map[string]bool, len(g.GroupedLights))
+	for _, ref := range g.GroupedLights {
+		has[ref.Bridge] = true
+	}
+	for _, l := range g.Lights {
+		if !has[l.Bridge] {
+			return false
+		}
+	}
+	return true
 }
 
 // dryRunHint tells the user how to actually apply the change.

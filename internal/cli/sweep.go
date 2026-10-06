@@ -56,7 +56,7 @@ func (a *App) runSweep(args []string) error {
 	}
 	applySweepOverrides(&cfg.Sweep, fs, *idle, *minOn)
 
-	client, err := a.client(cfg)
+	h, err := a.home(cfg)
 	if err != nil {
 		return err
 	}
@@ -64,9 +64,16 @@ func (a *App) runSweep(args []string) error {
 	ctx, cancel := a.context()
 	defer cancel()
 
-	snap, err := client.Snapshot(ctx)
+	snap, failed, err := h.snapshot(ctx)
 	if err != nil {
 		return err
+	}
+	// Without every bridge the sweep would judge rooms on half the
+	// evidence: a room's sensor may live on the missing bridge, and the
+	// outlier rule would then switch off lights someone is using. Skip the
+	// run; the next scheduled one will try again.
+	if len(failed) > 0 {
+		return fmt.Errorf("skipping sweep, not every bridge could be read: %w", joinBridgeErrors(failed))
 	}
 
 	// Load history before planning so the grace period is judged against
@@ -93,7 +100,7 @@ func (a *App) runSweep(args []string) error {
 	}
 	store.Observe(lights, now)
 
-	results, actErr := a.applyPlan(ctx, client, plan, dry, store)
+	results, actErr := a.applyPlan(ctx, h, snap, plan, dry, store)
 
 	// A dry run still records observations, otherwise the grace period could
 	// never elapse for someone who is only ever dry-running.
@@ -165,7 +172,7 @@ func devNullState() string {
 }
 
 // applyPlan switches off the planned lights unless this is a dry run.
-func (a *App) applyPlan(ctx context.Context, client *hue.Client, plan sweep.Plan, dryRun bool, store *state.Store) ([]result, error) {
+func (a *App) applyPlan(ctx context.Context, h *home, snap *hue.Snapshot, plan sweep.Plan, dryRun bool, store *state.Store) ([]result, error) {
 	var results []result
 	var failures int
 
@@ -187,7 +194,11 @@ func (a *App) applyPlan(ctx context.Context, client *hue.Client, plan sweep.Plan
 			if err := ctx.Err(); err != nil {
 				return results, err
 			}
-			if err := client.SetLightOn(ctx, target.LightID, false); err != nil {
+			client, err := h.client(snap.Lights[target.LightID].Bridge)
+			if err == nil {
+				err = client.SetLightOn(ctx, target.LightID, false)
+			}
+			if err != nil {
 				r.Error = err.Error()
 				failures++
 			} else {

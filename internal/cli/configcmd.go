@@ -43,8 +43,10 @@ func (a *App) runConfig(args []string) error {
 			return err
 		}
 		// Redact the key: this output gets pasted into issues and chats.
-		if cfg.Bridge.AppKey != "" {
-			cfg.Bridge.AppKey = redact(cfg.Bridge.AppKey)
+		for i := range cfg.Bridges {
+			if cfg.Bridges[i].AppKey != "" {
+				cfg.Bridges[i].AppKey = redact(cfg.Bridges[i].AppKey)
+			}
 		}
 		enc := json.NewEncoder(a.Out)
 		enc.SetIndent("", "  ")
@@ -72,7 +74,8 @@ func (a *App) initConfig(path string) error {
 
 	cfg := config.Default()
 	if existing, err := config.Load(path); err == nil {
-		cfg.Bridge = existing.Bridge
+		cfg.Bridges = existing.Bridges
+		cfg.RoomAliases = existing.RoomAliases
 	}
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("%s already exists; edit it directly or delete it first", path)

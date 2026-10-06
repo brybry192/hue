@@ -110,8 +110,8 @@ func TestBuildSnapshotRoom(t *testing.T) {
 	if g.Name != "Kitchen" || g.Kind != GroupRoom {
 		t.Errorf("group = %q/%q", g.Name, g.Kind)
 	}
-	if g.GroupedLightID != "gl1" {
-		t.Errorf("grouped light = %q, want gl1", g.GroupedLightID)
+	if len(g.GroupedLights) != 1 || g.GroupedLights[0].ID != "gl1" {
+		t.Errorf("grouped lights = %+v, want gl1", g.GroupedLights)
 	}
 	if len(g.Lights) != 2 {
 		t.Fatalf("got %d lights, want 2", len(g.Lights))
@@ -157,6 +157,7 @@ func TestBuildSnapshotZoneUsesLightChildren(t *testing.T) {
 		ID: "r1", Type: "room", Metadata: Metadata{Name: "Porch"},
 		Children: []ResourceRef{
 			{RID: "dev-l1", RType: "device"},
+			{RID: "dev-l2", RType: "device"},
 			{RID: "dev-s1", RType: "device"},
 		},
 		Services: []ResourceRef{{RID: "gl1", RType: "grouped_light"}},
@@ -185,8 +186,8 @@ func TestBuildSnapshotZoneUsesLightChildren(t *testing.T) {
 		t.Errorf("zone should inherit the Porch sensor, got %+v (inherited=%v)",
 			zone.Sensors, zone.SensorsInherited)
 	}
-	if zone.GroupedLightID != "glz" {
-		t.Errorf("grouped light = %q, want glz", zone.GroupedLightID)
+	if len(zone.GroupedLights) != 1 || zone.GroupedLights[0].ID != "glz" {
+		t.Errorf("grouped lights = %+v, want glz", zone.GroupedLights)
 	}
 }
 
@@ -239,6 +240,39 @@ func TestApplyConnectivity(t *testing.T) {
 	office, _ := snap.Group("Study")
 	if n := office.OnCount(); n != 1 {
 		t.Errorf("OnCount = %d, want 1: the unreachable light's stale on must not count", n)
+	}
+}
+
+func TestZoneInheritsOnlyWhenEveryLightIsSensed(t *testing.T) {
+	// Lower Level spans a kitchen with a sensor and a lounge without one. The
+	// kitchen sensor says nothing about the lounge, so the zone must not
+	// inherit it; Pantry, wholly inside the kitchen, may.
+	devices := []Device{
+		lightDevice("dev-k1", "Pendant", "k1"),
+		lightDevice("dev-l1", "Sofa Lamp", "l1"),
+		sensorDevice("dev-s1", "Kitchen Sensor", "m1"),
+	}
+	lights := []Light{lightRes("k1", "Pendant", true, 50), lightRes("l1", "Sofa Lamp", true, 50)}
+	motions := []Motion{motionRes("m1", "dev-s1", false, now.Add(-time.Hour))}
+	rooms := []Group{
+		{ID: "r1", Type: "room", Metadata: Metadata{Name: "Kitchen"},
+			Children: []ResourceRef{{RID: "dev-k1", RType: "device"}, {RID: "dev-s1", RType: "device"}}},
+		{ID: "r2", Type: "room", Metadata: Metadata{Name: "Lounge"},
+			Children: []ResourceRef{{RID: "dev-l1", RType: "device"}}},
+	}
+	zones := []Group{
+		{ID: "z1", Type: "zone", Metadata: Metadata{Name: "Lower Level"},
+			Children: []ResourceRef{{RID: "k1", RType: "light"}, {RID: "l1", RType: "light"}}},
+		{ID: "z2", Type: "zone", Metadata: Metadata{Name: "Pantry"},
+			Children: []ResourceRef{{RID: "k1", RType: "light"}}},
+	}
+
+	snap := BuildSnapshot(rooms, zones, devices, lights, motions)
+	if z, _ := snap.Group("Lower Level"); z.SensorsInherited || len(z.Sensors) != 0 {
+		t.Errorf("Lower Level inherited %+v; the lounge has no sensor, so it should inherit none", z.Sensors)
+	}
+	if z, _ := snap.Group("Pantry"); !z.SensorsInherited || len(z.Sensors) != 1 {
+		t.Errorf("Pantry sensors = %+v, want the Kitchen Sensor", z.Sensors)
 	}
 }
 

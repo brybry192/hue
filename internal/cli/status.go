@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/brybry192/hue/internal/hue"
@@ -21,7 +22,7 @@ func (a *App) runStatus(args []string) error {
 	if err != nil {
 		return err
 	}
-	client, err := a.client(cfg)
+	h, err := a.home(cfg)
 	if err != nil {
 		return err
 	}
@@ -29,13 +30,34 @@ func (a *App) runStatus(args []string) error {
 	ctx, cancel := a.context()
 	defer cancel()
 
-	info, err := client.Bridge(ctx)
+	snap, failed, err := h.snapshot(ctx)
 	if err != nil {
 		return err
 	}
-	snap, err := client.Snapshot(ctx)
-	if err != nil {
-		return err
+	down := make(map[string]error, len(failed))
+	for _, f := range failed {
+		down[f.Bridge] = f.Err
+	}
+
+	type bridgeOut struct {
+		Name     string `json:"name,omitempty"`
+		Host     string `json:"host"`
+		BridgeID string `json:"bridge_id,omitempty"`
+		TimeZone string `json:"time_zone,omitempty"`
+		Error    string `json:"error,omitempty"`
+	}
+	bridges := make([]bridgeOut, 0, len(h.bridges))
+	for _, b := range h.bridges {
+		bo := bridgeOut{Name: b.cfg.Name, Host: b.cfg.Host}
+		if err, ok := down[b.cfg.Label()]; ok {
+			bo.Error = err.Error()
+		} else if info, err := b.client.Bridge(ctx); err != nil {
+			bo.Error = err.Error()
+		} else {
+			bo.BridgeID = info.BridgeID
+			bo.TimeZone = info.TimeZone.TimeZone
+		}
+		bridges = append(bridges, bo)
 	}
 
 	var rooms, zones, lights, on, sensors, controls int
@@ -53,24 +75,20 @@ func (a *App) runStatus(args []string) error {
 	}
 
 	type statusOut struct {
-		Bridge     string `json:"bridge"`
-		BridgeID   string `json:"bridge_id"`
-		TimeZone   string `json:"time_zone,omitempty"`
-		Rooms      int    `json:"rooms"`
-		Zones      int    `json:"zones"`
-		Lights     int    `json:"lights"`
-		LightsOn   int    `json:"lights_on"`
-		Sensors    int    `json:"sensors"`
-		Controls   int    `json:"controls"`
-		SweptState string `json:"state_file,omitempty"`
-		Tracked    int    `json:"tracked_on,omitempty"`
-		ConfigPath string `json:"config_path,omitempty"`
-		SweepRooms int    `json:"sweep_rooms"`
+		Bridges    []bridgeOut `json:"bridges"`
+		Rooms      int         `json:"rooms"`
+		Zones      int         `json:"zones"`
+		Lights     int         `json:"lights"`
+		LightsOn   int         `json:"lights_on"`
+		Sensors    int         `json:"sensors"`
+		Controls   int         `json:"controls"`
+		SweptState string      `json:"state_file,omitempty"`
+		Tracked    int         `json:"tracked_on,omitempty"`
+		ConfigPath string      `json:"config_path,omitempty"`
+		SweepRooms int         `json:"sweep_rooms"`
 	}
 	out := statusOut{
-		Bridge:     cfg.Bridge.Host,
-		BridgeID:   info.BridgeID,
-		TimeZone:   info.TimeZone.TimeZone,
+		Bridges:    bridges,
 		Rooms:      rooms,
 		Zones:      zones,
 		Lights:     lights,
@@ -92,10 +110,26 @@ func (a *App) runStatus(args []string) error {
 	}
 
 	tw := tabwriter.NewWriter(a.Out, 0, 8, 2, ' ', 0)
-	fmt.Fprintf(tw, "bridge\t%s\n", out.Bridge)
-	fmt.Fprintf(tw, "bridge id\t%s\n", out.BridgeID)
-	if out.TimeZone != "" {
-		fmt.Fprintf(tw, "time zone\t%s\n", out.TimeZone)
+	for _, b := range out.Bridges {
+		label := "bridge"
+		if b.Name != "" {
+			label += " " + b.Name
+		}
+		switch {
+		case b.Error != "":
+			fmt.Fprintf(tw, "%s\t%s, unreachable: %s\n", label, b.Host, b.Error)
+		case b.TimeZone != "":
+			fmt.Fprintf(tw, "%s\t%s, id %s, %s\n", label, b.Host, b.BridgeID, b.TimeZone)
+		default:
+			fmt.Fprintf(tw, "%s\t%s, id %s\n", label, b.Host, b.BridgeID)
+		}
+	}
+	if len(cfg.RoomAliases) > 0 {
+		var pairs []string
+		for from, to := range cfg.RoomAliases {
+			pairs = append(pairs, from+" -> "+to)
+		}
+		fmt.Fprintf(tw, "room aliases\t%s\n", strings.Join(sortedNames(pairs), ", "))
 	}
 	fmt.Fprintf(tw, "rooms\t%d\n", out.Rooms)
 	fmt.Fprintf(tw, "zones\t%d\n", out.Zones)

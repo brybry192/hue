@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/brybry192/hue/internal/config"
 	"github.com/brybry192/hue/internal/hue"
 )
 
@@ -20,7 +21,8 @@ const (
 
 func (a *App) runAuth(args []string) error {
 	fs, cfgPath := a.newFlagSet("auth", "auth [flags]")
-	bridge := fs.String("bridge", "", "bridge address; discovered automatically when omitted")
+	addr := fs.String("bridge", "", "bridge address; discovered automatically when omitted")
+	name := fs.String("name", "", "name for this bridge; required to add a second bridge")
 	wait := fs.Duration("wait", defaultPairWait, "how long to wait for the link button to be pressed")
 	if err := fs.Parse(args); err != nil {
 		return ErrUsage
@@ -31,13 +33,47 @@ func (a *App) runAuth(args []string) error {
 		return err
 	}
 
+	// Work out which configured bridge, if any, this pairing replaces.
+	host := hue.NormalizeHost(*addr)
+	idx := -1
+	switch {
+	case *name != "":
+		idx = cfg.FindBridge(*name)
+		if idx < 0 && host != "" {
+			idx = cfg.FindBridge(host)
+		}
+	case host != "":
+		idx = cfg.FindBridge(host)
+	case len(cfg.Bridges) == 1:
+		idx = 0
+	case len(cfg.Bridges) > 1:
+		return fmt.Errorf("%d bridges are configured; choose one with --name", len(cfg.Bridges))
+	}
+
+	entry := config.Bridge{Name: strings.TrimSpace(*name)}
+	if idx >= 0 {
+		entry = cfg.Bridges[idx]
+		if *name != "" {
+			entry.Name = strings.TrimSpace(*name)
+		}
+		if host == "" {
+			host = entry.Host
+		}
+	} else if len(cfg.Bridges) > 0 {
+		// Adding another bridge: every bridge needs a name to tell them apart.
+		if entry.Name == "" {
+			return errors.New("a bridge is already configured; name this one with --name to add it alongside")
+		}
+		for _, b := range cfg.Bridges {
+			if b.Name == "" {
+				return fmt.Errorf("the bridge at %s has no name; add a \"name\" to it in %s first", b.Host, cfg.Path())
+			}
+		}
+	}
+
 	ctx, cancel := a.context()
 	defer cancel()
 
-	host := hue.NormalizeHost(*bridge)
-	if host == "" {
-		host = cfg.Bridge.Host
-	}
 	if host == "" {
 		host, err = a.discoverBridge(ctx)
 		if err != nil {
@@ -47,7 +83,7 @@ func (a *App) runAuth(args []string) error {
 	fmt.Fprintf(a.Out, "using bridge at %s\n", host)
 
 	// Record the bridge's certificate so later requests can be pinned to it.
-	fingerprint, err := hue.Fingerprint(ctx, host, cfg.Bridge.Timeout.Duration())
+	fingerprint, err := hue.Fingerprint(ctx, host, entry.Timeout.Duration())
 	if err != nil {
 		return err
 	}
@@ -55,7 +91,7 @@ func (a *App) runAuth(args []string) error {
 	client := hue.New(hue.Options{
 		Host:       host,
 		CertSHA256: fingerprint,
-		Timeout:    cfg.Bridge.Timeout.Duration(),
+		Timeout:    entry.Timeout.Duration(),
 	})
 
 	key, err := a.pair(ctx, client, *wait)
@@ -63,9 +99,14 @@ func (a *App) runAuth(args []string) error {
 		return err
 	}
 
-	cfg.Bridge.Host = host
-	cfg.Bridge.AppKey = key
-	cfg.Bridge.CertSHA256 = fingerprint
+	entry.Host = host
+	entry.AppKey = key
+	entry.CertSHA256 = fingerprint
+	if idx >= 0 {
+		cfg.Bridges[idx] = entry
+	} else {
+		cfg.Bridges = append(cfg.Bridges, entry)
+	}
 	if err := cfg.Save(*cfgPath); err != nil {
 		return err
 	}

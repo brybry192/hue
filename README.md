@@ -51,6 +51,12 @@ evidence about whether anyone is there.
 A sensor is only consulted when it is enabled and reports a `motion_report`
 timestamp. Disabled or ancient sensors fall through to the outlier rule.
 
+Zones have no sensors of their own, so a zone borrows the sensors of the rooms
+its lights are in — but only when **every** light in the zone is in a room
+with a sensor. A sensor sees its own room and nothing else: a "Lower Level"
+zone spanning a sensed kitchen and an unsensed lounge is judged by the
+outlier rule, so one room going quiet cannot switch off the other.
+
 ### The outlier rule
 
 For groups with no usable sensor, the shape of the group is the evidence. A
@@ -133,6 +139,29 @@ hue sweep --no-dry-run
 certificate fingerprint in `~/.config/hue/config.json` with `0600`
 permissions.
 
+### More than one bridge
+
+Several bridges can be combined, for instance when lights and motion sensors
+are spread across them. Pair each with a name:
+
+```bash
+hue auth --name main  --bridge 192.0.2.10
+hue auth --name annex --bridge 192.0.2.11
+```
+
+Every command then reads both bridges and treats them as one home:
+
+- **Rooms and zones with the same name are merged**, ignoring case. A Kitchen
+  on each bridge becomes one Kitchen holding both bridges' lights and sensors,
+  so a sensor on one bridge decides for lights on the other.
+- **`room_aliases`** merges rooms named differently on each bridge.
+- **Changes go to the bridge that owns each light**; `hue off Kitchen` sends
+  one grouped request per bridge.
+- **`hue ls` adds a BRIDGE column**, and `hue probe` takes `--bridge <name>`.
+- **If a bridge cannot be read, the sweep is skipped** for that run rather than
+  judging rooms on half the evidence: a room's sensor may be on the missing
+  bridge. `hue ls` and `hue status` carry on with a warning.
+
 ## Commands
 
 | Command | What it does |
@@ -160,6 +189,7 @@ hue sweep --log                  # one timestamped line per event, for log files
 hue sweep --json                 # the full plan and results as JSON
 hue off Kitchen --no-dry-run     # flags may come before or after the target
 hue probe                        # what resource types does this bridge have?
+hue probe --bridge annex motion  # one bridge's raw motion resources
 ```
 
 `hue sweep -v` is the command to reach for when it did not do what you
@@ -181,12 +211,22 @@ precedence: `--config`, `$HUE_CONFIG`, `$XDG_CONFIG_HOME/hue/config.json`,
 
 ```json
 {
-  "bridge": {
-    "host": "192.0.2.10",
-    "app_key": "your-application-key",
-    "cert_sha256": "3f2a...",
-    "timeout": "10s"
-  },
+  "bridges": [
+    {
+      "name": "main",
+      "host": "192.0.2.10",
+      "app_key": "your-application-key",
+      "cert_sha256": "3f2a...",
+      "timeout": "10s"
+    },
+    {
+      "name": "annex",
+      "host": "192.0.2.11",
+      "app_key": "another-application-key",
+      "cert_sha256": "9b1c..."
+    }
+  ],
+  "room_aliases": {"Yard": "Terrace"},
   "sweep": {
     "rooms": ["Kitchen", "Hallway", "Outside"],
     "exclude_lights": ["Night Light", "porch *"],
@@ -208,6 +248,8 @@ precedence: `--config`, `$HUE_CONFIG`, `$XDG_CONFIG_HOME/hue/config.json`,
 
 | Key | Default | Meaning |
 |---|---|---|
+| `bridges` | written by `hue auth` | Each bridge's name, address, key and pinned certificate. `name` is required once there are two |
+| `room_aliases` | `{}` | Rename rooms or zones before bridges are merged, case-insensitive |
 | `sweep.rooms` | `[]` (everything) | Rooms **and zones** to sweep, by name, case-insensitive |
 | `sweep.exclude_lights` | `[]` | Never switch these off; wildcards allowed |
 | `sweep.min_on_duration` | `10m` | Grace period before a light may be swept |
@@ -219,8 +261,11 @@ Durations are strings: `"45s"`, `"15m"`, `"1h30m"`. Any key you leave out keeps
 its default. `enabled` is deliberately a tri-state — omit it for the default,
 or set it explicitly to `false` to turn a rule off.
 
-Environment overrides: `HUE_BRIDGE_HOST`, `HUE_APP_KEY`, `HUE_CONFIG`,
-`HUE_STATE`.
+Environment overrides: `HUE_BRIDGE_HOST`, `HUE_APP_KEY` (only with a single
+bridge), `HUE_CONFIG`, `HUE_STATE`.
+
+Older files with a single `"bridge": {...}` entry still load, as a one-bridge
+list; the next `hue auth` rewrites it as `bridges`.
 
 ## Running it on a schedule
 
@@ -286,6 +331,7 @@ internal/hue/               the CLIP v2 client
   client.go                 HTTP, TLS pinning, retries
   auth.go                   discovery and pairing
   model.go                  resources -> rooms/zones/lights/sensors
+  merge.go                  several bridges -> one home
 internal/config/            config file, defaults, validation
 internal/state/             what the last sweep saw ("on since")
 internal/sweep/             the decision logic, as a pure function
@@ -515,7 +561,7 @@ The key is missing or no longer valid. Re-run `hue auth`.
 ### `bridge certificate does not match the pinned fingerprint`
 
 Expected if you replaced the bridge or reset it. Re-run `hue auth` to record
-the new certificate, or set `"insecure": true` under `bridge` to stop pinning.
+the new certificate, or set `"insecure": true` on that bridge to stop pinning.
 
 ### The sweep found nothing
 

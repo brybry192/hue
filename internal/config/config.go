@@ -42,8 +42,11 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// Bridge holds how to reach and authenticate to the bridge.
+// Bridge holds how to reach and authenticate to one bridge.
 type Bridge struct {
+	// Name identifies the bridge in output and on the command line. It may
+	// be empty when only one bridge is configured.
+	Name   string `json:"name,omitempty"`
 	Host   string `json:"host"`
 	AppKey string `json:"app_key"`
 	// CertSHA256 pins the bridge's TLS certificate, recorded at pairing time.
@@ -51,6 +54,14 @@ type Bridge struct {
 	// Insecure skips certificate pinning.
 	Insecure bool     `json:"insecure,omitempty"`
 	Timeout  Duration `json:"timeout,omitempty"`
+}
+
+// Label is how the bridge is shown: its name, or its address when unnamed.
+func (b Bridge) Label() string {
+	if b.Name != "" {
+		return b.Name
+	}
+	return b.Host
 }
 
 // Outlier configures the "one light left on in a group" rule.
@@ -103,8 +114,20 @@ type Sweep struct {
 
 // Config is the whole config file.
 type Config struct {
-	Bridge Bridge `json:"bridge"`
-	Sweep  Sweep  `json:"sweep"`
+	// Bridges lists every bridge. Rooms and zones with the same name on
+	// different bridges are treated as one, so lights on one bridge can be
+	// decided by motion sensors on another.
+	Bridges []Bridge `json:"bridges"`
+	// RoomAliases renames rooms and zones before bridges are merged, for
+	// rooms named differently on each: {"Yard": "Terrace"}. Matching is
+	// case-insensitive.
+	RoomAliases map[string]string `json:"room_aliases,omitempty"`
+	Sweep       Sweep             `json:"sweep"`
+
+	// LegacyBridge is the single "bridge" key of older config files. Load
+	// moves it into Bridges, so it is never set after loading and is never
+	// written back.
+	LegacyBridge *Bridge `json:"bridge,omitempty"`
 
 	// path records where this config was loaded from. Unexported, so it is
 	// never serialised.
@@ -119,9 +142,7 @@ func boolPtr(b bool) *bool { return &b }
 // Default returns the configuration used when the file is absent or partial.
 func Default() Config {
 	return Config{
-		Bridge: Bridge{
-			Timeout: Duration(10 * time.Second),
-		},
+		Bridges: []Bridge{},
 		Sweep: Sweep{
 			Rooms:         []string{},
 			MinOnDuration: Duration(10 * time.Minute),
@@ -173,7 +194,9 @@ func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		applyEnv(&cfg)
+		if err := applyEnv(&cfg); err != nil {
+			return cfg, err
+		}
 		return cfg, nil
 	case err != nil:
 		return cfg, fmt.Errorf("read config %s: %w", path, err)
@@ -184,26 +207,89 @@ func Load(path string) (Config, error) {
 		return cfg, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	cfg.path = path
-	applyEnv(&cfg)
+	if err := cfg.migrateLegacyBridge(); err != nil {
+		return cfg, fmt.Errorf("config %s: %w", path, err)
+	}
+	if err := applyEnv(&cfg); err != nil {
+		return cfg, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return cfg, fmt.Errorf("config %s: %w", path, err)
 	}
 	return cfg, nil
 }
 
+// migrateLegacyBridge moves an old single "bridge" entry into Bridges.
+func (c *Config) migrateLegacyBridge() error {
+	legacy := c.LegacyBridge
+	c.LegacyBridge = nil
+	if legacy == nil || (legacy.Host == "" && legacy.AppKey == "") {
+		return nil
+	}
+	if len(c.Bridges) > 0 {
+		return errors.New(`both "bridge" and "bridges" are set; move the bridge into the "bridges" list`)
+	}
+	c.Bridges = []Bridge{*legacy}
+	return nil
+}
+
 // applyEnv lets environment variables override the file, which is handy for
-// one-off runs and for keeping the key out of the file entirely.
-func applyEnv(cfg *Config) {
-	if v := strings.TrimSpace(os.Getenv("HUE_BRIDGE_HOST")); v != "" {
-		cfg.Bridge.Host = v
+// one-off runs and for keeping the key out of the file entirely. With several
+// bridges configured there is no telling which one they mean, so they are
+// refused.
+func applyEnv(cfg *Config) error {
+	host := strings.TrimSpace(os.Getenv("HUE_BRIDGE_HOST"))
+	key := strings.TrimSpace(os.Getenv("HUE_APP_KEY"))
+	if host == "" && key == "" {
+		return nil
 	}
-	if v := strings.TrimSpace(os.Getenv("HUE_APP_KEY")); v != "" {
-		cfg.Bridge.AppKey = v
+	switch len(cfg.Bridges) {
+	case 0:
+		cfg.Bridges = []Bridge{{}}
+	case 1:
+	default:
+		return fmt.Errorf("HUE_BRIDGE_HOST and HUE_APP_KEY cannot be used with %d bridges configured", len(cfg.Bridges))
 	}
+	if host != "" {
+		cfg.Bridges[0].Host = host
+	}
+	if key != "" {
+		cfg.Bridges[0].AppKey = key
+	}
+	return nil
+}
+
+// FindBridge returns the index of the bridge with the given name or host,
+// ignoring case, or -1.
+func (c *Config) FindBridge(nameOrHost string) int {
+	want := strings.ToLower(strings.TrimSpace(nameOrHost))
+	if want == "" {
+		return -1
+	}
+	for i, b := range c.Bridges {
+		if strings.ToLower(b.Name) == want || strings.ToLower(b.Host) == want {
+			return i
+		}
+	}
+	return -1
 }
 
 // Validate checks values that would otherwise fail confusingly later.
 func (c *Config) Validate() error {
+	// Several bridges need names, since output and --bridge refer to them.
+	if len(c.Bridges) > 1 {
+		seen := make(map[string]bool, len(c.Bridges))
+		for i, b := range c.Bridges {
+			name := strings.ToLower(strings.TrimSpace(b.Name))
+			if name == "" {
+				return fmt.Errorf("bridges[%d] (%s) needs a name when several bridges are configured", i, b.Host)
+			}
+			if seen[name] {
+				return fmt.Errorf("bridge name %q is used twice", b.Name)
+			}
+			seen[name] = true
+		}
+	}
 	s := c.Sweep
 	if s.Outlier.MinGroupSize < 0 {
 		return errors.New("sweep.outlier.min_group_size must not be negative")

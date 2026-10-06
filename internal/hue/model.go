@@ -41,6 +41,8 @@ type LightView struct {
 	// the bridge heard and cannot be trusted, and the light cannot be
 	// switched anyway.
 	Unreachable bool `json:"unreachable,omitempty"`
+	// Bridge names the bridge that controls the light, when there are several.
+	Bridge string `json:"bridge,omitempty"`
 }
 
 // SensorView is one motion service.
@@ -53,7 +55,8 @@ type SensorView struct {
 	LastChanged time.Time `json:"last_changed,omitempty"`
 	// HasReport is false for firmware old enough to lack motion_report, in
 	// which case LastChanged is meaningless.
-	HasReport bool `json:"has_report"`
+	HasReport bool   `json:"has_report"`
+	Bridge    string `json:"bridge,omitempty"`
 }
 
 // ControlView is a switch, dial or other non-light device.
@@ -63,19 +66,28 @@ type ControlView struct {
 	Kind    DeviceKind `json:"kind"`
 	Product string     `json:"product,omitempty"`
 	Buttons int        `json:"buttons,omitempty"`
+	Bridge  string     `json:"bridge,omitempty"`
+}
+
+// GroupedLightRef is a grouped-light service, which switches every light a
+// bridge has in a room or zone with one request. A group merged from several
+// bridges has one per bridge.
+type GroupedLightRef struct {
+	Bridge string `json:"bridge,omitempty"`
+	ID     string `json:"id"`
 }
 
 // GroupView is a room or zone with everything in it.
 type GroupView struct {
-	ID             string        `json:"id"`
-	Kind           string        `json:"kind"`
-	Name           string        `json:"name"`
-	GroupedLightID string        `json:"grouped_light_id,omitempty"`
-	Lights         []LightView   `json:"lights"`
-	Sensors        []SensorView  `json:"sensors,omitempty"`
-	Controls       []ControlView `json:"controls,omitempty"`
+	ID            string            `json:"id"`
+	Kind          string            `json:"kind"`
+	Name          string            `json:"name"`
+	GroupedLights []GroupedLightRef `json:"grouped_lights,omitempty"`
+	Lights        []LightView       `json:"lights"`
+	Sensors       []SensorView      `json:"sensors,omitempty"`
+	Controls      []ControlView     `json:"controls,omitempty"`
 	// SensorsInherited is true when a zone borrowed its sensors from the
-	// rooms that own its lights.
+	// rooms its lights are in.
 	SensorsInherited bool `json:"sensors_inherited,omitempty"`
 }
 
@@ -211,35 +223,16 @@ func BuildSnapshot(rooms, zones []Group, devices []Device, lights []Light, motio
 		Devices: devByID,
 	}
 
-	// roomOfDevice lets a zone inherit the motion sensors of the rooms its
-	// lights physically live in.
-	roomOfDevice := make(map[string]string, len(devices))
-	for _, r := range rooms {
-		for _, child := range r.Children {
-			if child.RType == "device" {
-				roomOfDevice[child.RID] = r.ID
-			}
-		}
-	}
-
 	groups := make([]GroupView, 0, len(rooms)+len(zones))
-	roomSensors := make(map[string][]SensorView, len(rooms))
-
 	for _, r := range rooms {
-		g := buildRoom(r, devByID, lightByID, motionByID)
-		roomSensors[r.ID] = g.Sensors
-		groups = append(groups, g)
+		groups = append(groups, buildRoom(r, devByID, lightByID, motionByID))
 	}
 	for _, z := range zones {
-		groups = append(groups, buildZone(z, devByID, lightByID, roomOfDevice, roomSensors))
+		groups = append(groups, buildZone(z, devByID, lightByID))
 	}
+	inheritZoneSensors(groups)
 
-	sort.SliceStable(groups, func(i, j int) bool {
-		if groups[i].Name != groups[j].Name {
-			return groups[i].Name < groups[j].Name
-		}
-		return groups[i].Kind < groups[j].Kind
-	})
+	sortGroups(groups)
 	snap.Groups = groups
 
 	for _, g := range groups {
@@ -250,12 +243,74 @@ func BuildSnapshot(rooms, zones []Group, devices []Device, lights []Light, motio
 	return snap
 }
 
+// sortGroups orders groups by name, rooms before zones of the same name.
+func sortGroups(groups []GroupView) {
+	sort.SliceStable(groups, func(i, j int) bool {
+		if groups[i].Name != groups[j].Name {
+			return groups[i].Name < groups[j].Name
+		}
+		return groups[i].Kind < groups[j].Kind
+	})
+}
+
+// inheritZoneSensors gives each zone the motion sensors of the rooms its
+// lights are in. Zones contain light services rather than devices, so they
+// have no sensors of their own; without this an "Outside" zone could never be
+// swept by the porch sensor. Any sensors a zone already holds are replaced,
+// so this can be re-run after groups are merged.
+//
+// A zone only inherits when every one of its lights is in a room with a
+// sensor. A sensor sees its own room and nothing else: a "Lower Level" zone
+// spanning a sensed kitchen and an unsensed lounge must not have its
+// lounge lights switched off because the kitchen went quiet.
+func inheritZoneSensors(groups []GroupView) {
+	roomOfLight := make(map[string]int)
+	for i, g := range groups {
+		if g.Kind != GroupRoom {
+			continue
+		}
+		for _, l := range g.Lights {
+			roomOfLight[l.ID] = i
+		}
+	}
+	for i := range groups {
+		z := &groups[i]
+		if z.Kind != GroupZone {
+			continue
+		}
+		z.Sensors, z.SensorsInherited = nil, false
+
+		var rooms []int
+		seenRoom := make(map[int]bool)
+		covered := len(z.Lights) > 0
+		for _, l := range z.Lights {
+			ri, ok := roomOfLight[l.ID]
+			if !ok || len(groups[ri].Sensors) == 0 {
+				covered = false
+				break
+			}
+			if !seenRoom[ri] {
+				seenRoom[ri] = true
+				rooms = append(rooms, ri)
+			}
+		}
+		if !covered {
+			continue
+		}
+		for _, ri := range rooms {
+			z.Sensors = append(z.Sensors, groups[ri].Sensors...)
+		}
+		z.SensorsInherited = true
+		sortGroupContents(z)
+	}
+}
+
 func buildRoom(r Group, devByID map[string]Device, lightByID map[string]Light, motionByID map[string]Motion) GroupView {
 	g := GroupView{
-		ID:             r.ID,
-		Kind:           GroupRoom,
-		Name:           r.Metadata.Name,
-		GroupedLightID: groupedLightID(r),
+		ID:            r.ID,
+		Kind:          GroupRoom,
+		Name:          r.Metadata.Name,
+		GroupedLights: groupedLights(r),
 	}
 	for _, child := range r.Children {
 		if child.RType != "device" {
@@ -302,16 +357,13 @@ func buildRoom(r Group, devByID map[string]Device, lightByID map[string]Light, m
 	return g
 }
 
-func buildZone(z Group, devByID map[string]Device, lightByID map[string]Light,
-	roomOfDevice map[string]string, roomSensors map[string][]SensorView) GroupView {
-
+func buildZone(z Group, devByID map[string]Device, lightByID map[string]Light) GroupView {
 	g := GroupView{
-		ID:             z.ID,
-		Kind:           GroupZone,
-		Name:           z.Metadata.Name,
-		GroupedLightID: groupedLightID(z),
+		ID:            z.ID,
+		Kind:          GroupZone,
+		Name:          z.Metadata.Name,
+		GroupedLights: groupedLights(z),
 	}
-	seenRoom := make(map[string]bool)
 	for _, child := range z.Children {
 		if child.RType != "light" {
 			continue
@@ -326,16 +378,6 @@ func buildZone(z Group, devByID map[string]Device, lightByID map[string]Light,
 			kind = KindLight
 		}
 		g.Lights = append(g.Lights, lightView(l, d, kind))
-
-		// Zones contain light services, not devices, so they carry no
-		// sensors of their own. Borrow them from the owning rooms.
-		if roomID, ok := roomOfDevice[l.Owner.RID]; ok && !seenRoom[roomID] {
-			seenRoom[roomID] = true
-			if sensors := roomSensors[roomID]; len(sensors) > 0 {
-				g.Sensors = append(g.Sensors, sensors...)
-				g.SensorsInherited = true
-			}
-		}
 	}
 	sortGroupContents(&g)
 	return g
@@ -347,13 +389,13 @@ func sortGroupContents(g *GroupView) {
 	sort.SliceStable(g.Controls, func(i, j int) bool { return g.Controls[i].Name < g.Controls[j].Name })
 }
 
-func groupedLightID(g Group) string {
+func groupedLights(g Group) []GroupedLightRef {
 	for _, svc := range g.Services {
 		if svc.RType == "grouped_light" {
-			return svc.RID
+			return []GroupedLightRef{{ID: svc.RID}}
 		}
 	}
-	return ""
+	return nil
 }
 
 func lightView(l Light, d Device, kind DeviceKind) LightView {

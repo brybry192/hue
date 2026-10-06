@@ -64,7 +64,7 @@ func sensorActive(name string) hue.SensorView {
 func room(name string, lights []hue.LightView, sensors ...hue.SensorView) hue.GroupView {
 	return hue.GroupView{
 		ID: "g-" + name, Kind: hue.GroupRoom, Name: name,
-		GroupedLightID: "gl-" + name, Lights: lights, Sensors: sensors,
+		GroupedLights: []hue.GroupedLightRef{{ID: "gl-" + name}}, Lights: lights, Sensors: sensors,
 	}
 }
 
@@ -529,7 +529,7 @@ func TestLightInRoomAndZoneIsSweptOnce(t *testing.T) {
 		shared, light("l2", "Porch Right", false), light("l3", "Porch Step", false),
 	})
 	zoneGroup := hue.GroupView{
-		ID: "z1", Kind: hue.GroupZone, Name: "Outside", GroupedLightID: "glz",
+		ID: "z1", Kind: hue.GroupZone, Name: "Outside", GroupedLights: []hue.GroupedLightRef{{ID: "glz"}},
 		Lights: []hue.LightView{
 			shared, light("l9", "Garden A", false), light("l8", "Garden B", false),
 		},
@@ -547,7 +547,7 @@ func TestLightInRoomAndZoneIsSweptOnce(t *testing.T) {
 
 func TestZoneWithInheritedSensorsUsesMotionRule(t *testing.T) {
 	zone := hue.GroupView{
-		ID: "z1", Kind: hue.GroupZone, Name: "Outside", GroupedLightID: "glz",
+		ID: "z1", Kind: hue.GroupZone, Name: "Outside", GroupedLights: []hue.GroupedLightRef{{ID: "glz"}},
 		Lights:           lightsOnOf(6, 6),
 		Sensors:          []hue.SensorView{sensorSeen("Driveway", 30*time.Minute)},
 		SensorsInherited: true,

@@ -23,7 +23,7 @@ func (a *App) runList(args []string) error {
 	if err != nil {
 		return err
 	}
-	client, err := a.client(cfg)
+	h, err := a.home(cfg)
 	if err != nil {
 		return err
 	}
@@ -31,10 +31,11 @@ func (a *App) runList(args []string) error {
 	ctx, cancel := a.context()
 	defer cancel()
 
-	snap, err := client.Snapshot(ctx)
+	snap, failed, err := h.snapshot(ctx)
 	if err != nil {
 		return err
 	}
+	a.warnFailed(failed)
 
 	groups := snap.Groups
 	if *rooms {
@@ -58,7 +59,7 @@ func (a *App) runList(args []string) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(groups)
 	}
-	a.printGroups(groups, *onlyOn)
+	a.printGroups(groups, *onlyOn, h.multi())
 	return nil
 }
 
@@ -72,24 +73,23 @@ func filterGroups(in []hue.GroupView, keep func(hue.GroupView) bool) []hue.Group
 	return out
 }
 
-// listColumns are the headers of the device table, in order.
-var listColumns = []string{"ROOM", "GROUP", "DEVICE", "TYPE", "STATE", "BRIGHT", "DETAIL"}
+// listColumns are the headers of the device table, in order. BRIDGE is only
+// shown when there is more than one bridge.
+var listColumns = []string{"ROOM", "GROUP", "DEVICE", "TYPE", "BRIDGE", "STATE", "BRIGHT", "DETAIL"}
 
-func (a *App) printGroups(groups []hue.GroupView, onlyOn bool) {
+const bridgeColumn = 4
+
+func (a *App) printGroups(groups []hue.GroupView, onlyOn, showBridge bool) {
 	now := a.now()
 
 	rows := make([][]string, 0, 32)
 	totalLights, totalOn := 0, 0
 
-	for gi, g := range groups {
+	for _, g := range groups {
 		totalLights += len(g.Lights)
 		totalOn += g.OnCount()
 
-		// Blank line between rooms so each block reads on its own.
-		if gi > 0 {
-			rows = append(rows, nil)
-		}
-
+		var block [][]string
 		for _, l := range g.Lights {
 			if onlyOn && (!l.On || l.Unreachable) {
 				continue
@@ -105,32 +105,38 @@ func (a *App) printGroups(groups []hue.GroupView, onlyOn bool) {
 					bright = fmt.Sprintf("%.0f%%", l.Brightness)
 				}
 			}
-			rows = append(rows, []string{
-				g.Name, g.Kind, l.Name, string(l.Kind), state, bright, detail,
+			block = append(block, []string{
+				g.Name, g.Kind, l.Name, string(l.Kind), l.Bridge, state, bright, detail,
 			})
 		}
-		if onlyOn {
+		if !onlyOn {
+			for _, s := range g.Sensors {
+				detail := s.Describe(now)
+				if g.SensorsInherited {
+					detail += " (from room)"
+				}
+				block = append(block, []string{
+					g.Name, g.Kind, s.Name, string(hue.KindSensor), s.Bridge, "-", "-", detail,
+				})
+			}
+			for _, c := range g.Controls {
+				detail := c.Product
+				if c.Buttons > 0 {
+					detail = strings.TrimSpace(fmt.Sprintf("%s (%d buttons)", detail, c.Buttons))
+				}
+				block = append(block, []string{
+					g.Name, g.Kind, c.Name, string(c.Kind), c.Bridge, "-", "-", detail,
+				})
+			}
+		}
+		if len(block) == 0 {
 			continue
 		}
-
-		for _, s := range g.Sensors {
-			detail := s.Describe(now)
-			if g.SensorsInherited {
-				detail += " (from room)"
-			}
-			rows = append(rows, []string{
-				g.Name, g.Kind, s.Name, string(hue.KindSensor), "-", "-", detail,
-			})
+		// Blank line between rooms so each block reads on its own.
+		if len(rows) > 0 {
+			rows = append(rows, nil)
 		}
-		for _, c := range g.Controls {
-			detail := c.Product
-			if c.Buttons > 0 {
-				detail = strings.TrimSpace(fmt.Sprintf("%s (%d buttons)", detail, c.Buttons))
-			}
-			rows = append(rows, []string{
-				g.Name, g.Kind, c.Name, string(c.Kind), "-", "-", detail,
-			})
-		}
+		rows = append(rows, block...)
 	}
 
 	if len(rows) == 0 {
@@ -138,8 +144,24 @@ func (a *App) printGroups(groups []hue.GroupView, onlyOn bool) {
 		return
 	}
 
-	writeTable(a.Out, listColumns, rows)
+	headers := listColumns
+	if !showBridge {
+		headers = dropColumn(headers, bridgeColumn)
+		for i, row := range rows {
+			if row != nil {
+				rows[i] = dropColumn(row, bridgeColumn)
+			}
+		}
+	}
+	writeTable(a.Out, headers, rows)
 	fmt.Fprintf(a.Out, "\n%d rooms/zones, %d lights, %d on\n", len(groups), totalLights, totalOn)
+}
+
+// dropColumn returns row without column i.
+func dropColumn(row []string, i int) []string {
+	out := make([]string, 0, len(row)-1)
+	out = append(out, row[:i]...)
+	return append(out, row[i+1:]...)
 }
 
 // writeTable prints a header, a dashed rule and the rows, each column padded to

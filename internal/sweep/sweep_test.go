@@ -425,6 +425,45 @@ func TestOverlappingGroupsAreSweptInOneRun(t *testing.T) {
 	}
 }
 
+func TestRecentMotionProtectsLightsInEveryGroup(t *testing.T) {
+	// Someone was in the kitchen a minute ago. The Lower Level zone has no
+	// sensor of its own (the lounge has none), and 2 of its 10 lights are on:
+	// one in the kitchen, one in the lounge. The zone may switch off the
+	// lounge light, but not the kitchen one.
+	pendant := light("k1", "Pendant", true)
+	sofa := light("l1", "Sofa Lamp", true)
+	kitchen := room("Kitchen", []hue.LightView{pendant, light("k2", "Strip", false)}, sensorSeen("Kitchen Sensor", time.Minute))
+	lounge := room("Lounge", append([]hue.LightView{sofa}, lightsPrefixed("Lounge", 7, 0)...))
+	zone := hue.GroupView{ID: "z1", Kind: hue.GroupZone, Name: "Lower Level",
+		Lights: append([]hue.LightView{pendant, light("k2", "Strip", false), sofa}, lightsPrefixed("Lounge", 7, 0)...)}
+
+	plan := build(t, Inputs{Groups: []hue.GroupView{kitchen, lounge, zone}, Cfg: baseCfg()})
+
+	if got := targetNames(plan); !slices.Equal(got, []string{"Sofa Lamp"}) {
+		t.Fatalf("switched off %v, want only [Sofa Lamp]", got)
+	}
+	found := false
+	for _, n := range plan.Notes {
+		if strings.Contains(n.Text, "Pendant kept on: recent motion in Kitchen") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("notes = %+v, want one saying Pendant was kept on", plan.Notes)
+	}
+
+	t.Run("an idle sensor protects nothing", func(t *testing.T) {
+		idle := kitchen
+		idle.Sensors = []hue.SensorView{sensorSeen("Kitchen Sensor", time.Hour)}
+		plan := build(t, Inputs{Groups: []hue.GroupView{idle, lounge, zone}, Cfg: baseCfg()})
+		got := targetNames(plan)
+		sort.Strings(got)
+		if !slices.Equal(got, []string{"Pendant", "Sofa Lamp"}) {
+			t.Errorf("switched off %v, want [Pendant Sofa Lamp]", got)
+		}
+	})
+}
+
 func TestRoomSelection(t *testing.T) {
 	groups := []hue.GroupView{
 		room("Kitchen", lightsPrefixed("Kitchen", 5, 1)),

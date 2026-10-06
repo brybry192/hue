@@ -98,6 +98,11 @@ func Build(in Inputs) Plan {
 	// enough, and reporting it once keeps the output honest.
 	claimed := make(map[string]bool)
 
+	// Presence is judged across every group, not just the ones in scope: a
+	// light in a room with recent motion stays on whichever group it is
+	// judged in.
+	occupied := occupiedLights(in.Groups, in.Cfg, in.Now)
+
 	// Groups overlap, so switching lights off in one can leave another with
 	// few enough on to qualify: a zone with 4 on is left alone, but once two
 	// of them are swept as stragglers in a neighbouring zone, its remaining 2
@@ -109,7 +114,7 @@ func Build(in Inputs) Plan {
 		var notes []Note
 		added := false
 		for _, g := range groups {
-			action, n := evaluate(withPlannedOff(g, claimed), in, claimed)
+			action, n := evaluate(withPlannedOff(g, claimed), in, claimed, occupied)
 			notes = append(notes, n...)
 			if action == nil {
 				continue
@@ -186,7 +191,7 @@ func selectGroups(all []hue.GroupView, wanted []string) ([]hue.GroupView, []stri
 }
 
 // evaluate applies the rules to a single group.
-func evaluate(g hue.GroupView, in Inputs, claimed map[string]bool) (*Action, []Note) {
+func evaluate(g hue.GroupView, in Inputs, claimed map[string]bool, occupied map[string]string) (*Action, []Note) {
 	cfg := in.Cfg
 	var notes []Note
 	note := func(format string, args ...any) {
@@ -226,6 +231,26 @@ func evaluate(g hue.GroupView, in Inputs, claimed map[string]bool) (*Action, []N
 	}
 	if len(candidates) == 0 {
 		note("%d/%d on but every on light is excluded", len(on), total)
+		return nil, notes
+	}
+
+	// Lights in a room someone is in stay on, even when this group's shape
+	// says otherwise. They still count as on above, which only makes the
+	// group look less like it has stragglers.
+	var free []hue.LightView
+	kept := make(map[string][]string)
+	for _, l := range candidates {
+		if room, ok := occupied[l.ID]; ok {
+			kept[room] = append(kept[room], l.Name)
+			continue
+		}
+		free = append(free, l)
+	}
+	for _, room := range sortedKeys(kept) {
+		note("%s kept on: recent motion in %s", strings.Join(kept[room], ", "), room)
+	}
+	candidates = free
+	if len(candidates) == 0 {
 		return nil, notes
 	}
 
@@ -368,4 +393,37 @@ func matchesAny(l hue.LightView, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// occupiedLights maps each light in a group with recent motion to that
+// group's name. A sensor is direct evidence that someone is in its room, so
+// none of that room's lights may be switched off by a zone that happens to
+// include them.
+func occupiedLights(groups []hue.GroupView, cfg config.Sweep, now time.Time) map[string]string {
+	if !cfg.Motion.IsEnabled() {
+		return nil
+	}
+	threshold := cfg.Motion.IdleThreshold.Duration()
+	out := make(map[string]string)
+	for _, g := range groups {
+		last, ok := g.LastMotion(now)
+		if !ok || now.Sub(last) >= threshold {
+			continue
+		}
+		for _, l := range g.Lights {
+			if _, seen := out[l.ID]; !seen {
+				out[l.ID] = g.Name
+			}
+		}
+	}
+	return out
+}
+
+func sortedKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

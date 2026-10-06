@@ -46,6 +46,9 @@ evidence about whether anyone is there.
 - Motion more recently than that → **leave the group completely alone**, even
   if it looks like an outlier. One light on in a room someone is standing in is
   a deliberate choice, not a straggler.
+- That protection follows the lights: a light in a room with recent motion is
+  never switched off by a zone that includes it, even when the zone itself
+  has no sensor and looks like it has stragglers.
 
 A sensor is only consulted when it is enabled and reports a `motion_report`
 timestamp. Disabled or ancient sensors fall through to the outlier rule.

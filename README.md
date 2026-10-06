@@ -73,6 +73,13 @@ probably switched on deliberately). 2 of 12 outside is swept; 2 of 4 is not.
 Both the count and the fraction must pass, which is what stops a big zone being
 swept merely because two of its lights are on.
 
+Rooms and zones overlap, so a sweep works in rounds. If a zone has 4 lights on
+it is left alone, but if two of those are switched off as stragglers in a
+neighbouring zone, its remaining 2 now qualify too. Each round treats the
+lights already chosen as off and looks again, until nothing more qualifies.
+Groups that only qualified this way say `once other groups were swept`. To
+keep a lamp on whatever its neighbours do, list it in `exclude_lights`.
+
 ### The grace period
 
 The Hue API exposes no "when did this light turn on" timestamp, so the tool

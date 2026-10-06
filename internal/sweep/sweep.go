@@ -46,6 +46,10 @@ type Action struct {
 	OnCount   int      `json:"on_count"`
 	Total     int      `json:"total"`
 	Lights    []Target `json:"lights"`
+	// Round is 1 for a group that qualified as the home stood, and higher
+	// for one that only qualified once earlier rounds had switched off
+	// lights it shares with other groups.
+	Round int `json:"round"`
 }
 
 // Note explains why a group was examined but left alone. Notes are
@@ -104,18 +108,56 @@ func Build(in Inputs) Plan {
 	// enough, and reporting it once keeps the output honest.
 	claimed := make(map[string]bool)
 
-	for _, g := range groups {
-		action, notes := evaluate(g, in, claimed)
-		plan.Notes = append(plan.Notes, notes...)
-		if action == nil {
-			continue
+	// Groups overlap, so switching lights off in one can leave another with
+	// few enough on to qualify: a zone with 4 on is left alone, but once two
+	// of them are swept as stragglers in a neighbouring zone, its remaining 2
+	// are stragglers too. Run rounds, treating planned lights as off, until a
+	// round adds nothing. This reaches in one run what repeated runs would
+	// reach anyway. Every round switches off at least one light, so the loop
+	// ends; the bound is only a backstop.
+	for round := 1; round <= len(groups)+1; round++ {
+		var notes []Note
+		added := false
+		for _, g := range groups {
+			action, n := evaluate(withPlannedOff(g, claimed), in, claimed)
+			notes = append(notes, n...)
+			if action == nil {
+				continue
+			}
+			for _, t := range action.Lights {
+				claimed[t.LightID] = true
+			}
+			action.Round = round
+			if round > 1 {
+				action.Reason += ", once other groups were swept"
+			}
+			plan.Actions = append(plan.Actions, *action)
+			added = true
 		}
-		for _, t := range action.Lights {
-			claimed[t.LightID] = true
+		// The last round's notes describe the home as the plan leaves it.
+		plan.Notes = notes
+		if !added {
+			break
 		}
-		plan.Actions = append(plan.Actions, *action)
 	}
 	return plan
+}
+
+// withPlannedOff returns g with every light the plan already switches off
+// marked off, without modifying g.
+func withPlannedOff(g hue.GroupView, off map[string]bool) hue.GroupView {
+	if len(off) == 0 {
+		return g
+	}
+	lights := make([]hue.LightView, len(g.Lights))
+	for i, l := range g.Lights {
+		if off[l.ID] {
+			l.On = false
+		}
+		lights[i] = l
+	}
+	g.Lights = lights
+	return g
 }
 
 // selectGroups resolves the configured names to groups, preserving the order

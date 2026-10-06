@@ -2,6 +2,9 @@ package sweep
 
 import (
 	"fmt"
+	"maps"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -464,6 +467,49 @@ func TestUnreachableLights(t *testing.T) {
 			t.Errorf("notes = %+v, want none", plan.Notes)
 		}
 	})
+}
+
+func TestOverlappingGroupsAreSweptInOneRun(t *testing.T) {
+	// Pendant and Sconce 2 are in both zones. Middle has 4 on, too many to look
+	// forgotten, while East has just those 2. Once East's are planned off,
+	// Middle is down to Arc and Cone, and West then has 1 left. One run must
+	// reach that, not three.
+	zone := func(name string, lights ...hue.LightView) hue.GroupView {
+		for i := len(lights); i < 10; i++ {
+			lights = append(lights, light(fmt.Sprintf("%s-off%d", name, i), fmt.Sprintf("%s off %d", name, i), false))
+		}
+		return hue.GroupView{ID: "z-" + name, Kind: hue.GroupZone, Name: name, Lights: lights}
+	}
+	pendant, sconce := light("c", "Pendant", true), light("t", "Sconce 2", true)
+	arc, cone, dome := light("g", "Arc", true), light("r", "Cone", true), light("s", "Dome", true)
+	groups := []hue.GroupView{
+		zone("West", arc, cone, dome),
+		zone("Middle", pendant, sconce, arc, cone),
+		zone("East", pendant, sconce),
+	}
+
+	plan := build(t, Inputs{Groups: groups, Cfg: baseCfg()})
+
+	got := targetNames(plan)
+	sort.Strings(got)
+	if want := []string{"Arc", "Cone", "Dome", "Pendant", "Sconce 2"}; !slices.Equal(got, want) {
+		t.Fatalf("switched off %v, want %v", got, want)
+	}
+	rounds := map[string]int{}
+	for _, a := range plan.Actions {
+		rounds[a.Group] = a.Round
+	}
+	if want := map[string]int{"East": 1, "Middle": 2, "West": 3}; !maps.Equal(rounds, want) {
+		t.Errorf("rounds = %v, want %v", rounds, want)
+	}
+	for _, a := range plan.Actions {
+		if a.Round > 1 && !strings.Contains(a.Reason, "once other groups were swept") {
+			t.Errorf("%s reason %q should say it followed earlier rounds", a.Group, a.Reason)
+		}
+	}
+	if len(plan.Notes) != 0 {
+		t.Errorf("notes = %+v; with everything swept there should be nothing left to explain", plan.Notes)
+	}
 }
 
 func TestRoomSelection(t *testing.T) {

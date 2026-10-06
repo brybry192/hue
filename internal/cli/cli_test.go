@@ -572,3 +572,11 @@ func TestWriteTablePadsByCharacter(t *testing.T) {
 		}
 	}
 }
+
+func TestBrightnessNeverLooksOff(t *testing.T) {
+	for in, want := range map[float64]string{0: "min", 0.39: "0.4%", 1: "1%", 30.59: "30.6%", 70: "70%", 100: "100%"} {
+		if got := brightness(in); got != want {
+			t.Errorf("brightness(%v) = %q, want %q", in, got, want)
+		}
+	}
+}

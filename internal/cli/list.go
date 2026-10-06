@@ -3,6 +3,8 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -102,7 +104,7 @@ func (a *App) printGroups(groups []hue.GroupView, onlyOn, showBridge bool) {
 			case l.On:
 				state = "on"
 				if l.HasDimming {
-					bright = fmt.Sprintf("%.0f%%", l.Brightness)
+					bright = brightness(l.Brightness)
 				}
 			}
 			block = append(block, []string{
@@ -209,4 +211,15 @@ func padCells(cells []string, widths []int) string {
 		}
 	}
 	return b.String()
+}
+
+// brightness formats a light's brightness setting to one decimal place, as
+// the bridge reports it: 30.6%, 100%. A light on at the bottom of the scale
+// can report 0, which would read as off, so it is shown as "min" (the Hue
+// app shows 1%).
+func brightness(pct float64) string {
+	if pct <= 0 {
+		return "min"
+	}
+	return strconv.FormatFloat(math.Round(pct*10)/10, 'f', -1, 64) + "%"
 }

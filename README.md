@@ -7,16 +7,15 @@ notices. `hue sweep` notices.
 
 ```
 $ hue sweep
-Hallway (room): no motion for 23m (threshold 15m) -> motion-idle
-  would off  Hall 1 (on for 1h12m)
-  would off  Hall 2 (on for 1h12m)
-
-Kitchen (room): 1 of 5 lights on (20% of the group) -> outlier
-  would off  Kitchen 3 (on for 42m)
-
-would switch off 3 lights in 2 groups
-this was a dry run; re-run with --no-dry-run to switch them off
+2026-10-05T13:12:03Z dry-run off group="Hallway" kind=room rule=motion-idle light="Hall 1" on_for=1h12m reason="no motion for 23m (threshold 15m)"
+2026-10-05T13:12:03Z dry-run off group="Hallway" kind=room rule=motion-idle light="Hall 2" on_for=1h12m reason="no motion for 23m (threshold 15m)"
+2026-10-05T13:12:03Z dry-run off group="Kitchen" kind=room rule=outlier light="Kitchen 3" on_for=42m reason="1 of 5 lights on (20% of the group)"
+2026-10-05T13:12:03Z dry-run swept lights=3 groups=2 hint="nothing changed; add --no-dry-run to apply"
 ```
+
+Every line starts with the time of the sweep, so the output reads the same in
+a terminal and in a log file. `dry-run` marks a preview; a real run leaves it
+out. A run with nothing to do is a single `swept lights=0 groups=0` line.
 
 ## Contents
 
@@ -192,7 +191,6 @@ hue sweep --rooms Kitchen,Outside    # override the configured scope
 hue sweep --idle 30m --min-on 20m    # override thresholds for one run
 hue sweep --force                # ignore the grace period
 hue sweep -v                     # explain the groups it left alone
-hue sweep --log                  # one timestamped line per event, for log files
 hue sweep --json                 # the full plan and results as JSON
 hue off Kitchen --no-dry-run     # flags may come before or after the target
 hue probe                        # what resource types does this bridge have?
@@ -204,10 +202,9 @@ expected — it prints the reasoning for every group it skipped:
 
 ```
 $ hue sweep -v
-  . Lounge: motion 1m ago, under the 15m threshold, so someone is probably there
-  . Porch: Porch Left already handled by another group
-  . Study: 3/5 on, no rule applies (no usable motion sensor; 60% of the group
-    is on, over max_on_fraction 34%)
+2026-10-05T13:12:03Z dry-run note group="Lounge" msg="4/4 on, no rule applies (motion 1m ago, under the 15m threshold, so someone is probably there)"
+2026-10-05T13:12:03Z dry-run note group="Study" msg="3/5 on, no rule applies (no usable motion sensor; 60% of the group is on, over max_on_fraction 34%)"
+2026-10-05T13:12:03Z dry-run swept lights=0 groups=0
 ```
 
 ## Configuration
@@ -293,7 +290,6 @@ A `launchd` agent at `~/Library/LaunchAgents/com.brybry192.hue.sweep.plist`:
     <string>/usr/local/bin/hue</string>
     <string>sweep</string>
     <string>--no-dry-run</string>
-    <string>--log</string>
   </array>
   <key>StartInterval</key><integer>300</integer>
   <key>StandardOutPath</key><string>/tmp/hue-sweep.log</string>
@@ -309,19 +305,12 @@ launchctl load ~/Library/LaunchAgents/com.brybry192.hue.sweep.plist
 Or cron, every five minutes:
 
 ```cron
-*/5 * * * * /usr/local/bin/hue sweep --no-dry-run --log >> /tmp/hue-sweep.log 2>&1
+*/5 * * * * /usr/local/bin/hue sweep --no-dry-run >> /tmp/hue-sweep.log 2>&1
 ```
 
-`--log` writes one line per light switched off, then a summary, each
-starting with the time of the sweep. A run with nothing to do is one line:
-
-```
-2026-10-05T13:12:03Z off group="Study" rule=outlier light="Lamp" on_for=12m
-2026-10-05T13:12:03Z swept lights=1 groups=1
-2026-10-05T13:17:03Z swept lights=0 groups=0
-```
-
-Add `-v` to log why each group was left alone as `note` lines.
+The log then gains one line per light switched off and one summary line per
+run, so a quiet run costs a single line. Add `-v` to also log why each group
+was left alone, as `note` lines.
 
 Note that a scheduled job needs its own Local Network permission on macOS — see
 [Troubleshooting](#troubleshooting).

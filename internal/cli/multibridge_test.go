@@ -105,7 +105,7 @@ func TestTwoBridgesSweepUsesSensorsAcrossBridges(t *testing.T) {
 	if got, want := annex.Writes(), []string{"light/l-v2strip=off"}; !slices.Equal(got, want) {
 		t.Errorf("annex writes = %v, want %v", got, want)
 	}
-	if !strings.Contains(out, "Kitchen (room): no motion for 30m") {
+	if !strings.Contains(out, `group="Kitchen" kind=room rule=motion-idle`) || !strings.Contains(out, `reason="no motion for 30m`) {
 		t.Errorf("Kitchen should be decided by the annex sensor:\n%s", out)
 	}
 	// Porch Left alone would be an outlier, but Yard is aliased to

@@ -20,7 +20,9 @@ const writeDelay = 120 * time.Millisecond
 // result records what happened to one light.
 type result struct {
 	Group   string `json:"group"`
+	Kind    string `json:"group_kind"`
 	Rule    string `json:"rule"`
+	Reason  string `json:"reason"`
 	LightID string `json:"light_id"`
 	Name    string `json:"name"`
 	OnFor   string `json:"on_for,omitempty"`
@@ -39,7 +41,6 @@ func (a *App) runSweep(args []string) error {
 	force := fs.Bool("force", false, "ignore the min-on grace period")
 	asJSON := fs.Bool("json", false, "emit JSON")
 	verbose := fs.Bool("v", false, "explain groups that were left alone")
-	asLog := fs.Bool("log", false, "one timestamped line per event, for scheduled runs")
 	statePath := fs.String("state", "", "sweep state file path (default "+defaultStatePathForHelp()+")")
 	noState := fs.Bool("no-state", false, "do not read or write the state file")
 	if err := fs.Parse(args); err != nil {
@@ -124,11 +125,7 @@ func (a *App) runSweep(args []string) error {
 		return actErr
 	}
 
-	if *asLog {
-		a.printPlanLog(plan, results, dry, *verbose)
-		return actErr
-	}
-	a.printPlan(plan, results, dry, *verbose)
+	a.printLog(plan, results, dry, *verbose)
 	return actErr
 }
 
@@ -180,7 +177,9 @@ func (a *App) applyPlan(ctx context.Context, h *home, snap *hue.Snapshot, plan s
 		for _, target := range action.Lights {
 			r := result{
 				Group:   action.Group,
+				Kind:    action.GroupKind,
 				Rule:    string(action.Rule),
+				Reason:  action.Reason,
 				LightID: target.LightID,
 				Name:    target.Name,
 			}
@@ -221,74 +220,13 @@ func (a *App) applyPlan(ctx context.Context, h *home, snap *hue.Snapshot, plan s
 	return results, nil
 }
 
-func (a *App) printPlan(plan sweep.Plan, results []result, dryRun, verbose bool) {
-	for _, w := range plan.Warnings {
-		fmt.Fprintf(a.Err, "hue: warning: %s\n", w)
-	}
-
-	byGroup := make(map[string][]result, len(plan.Actions))
-	for _, r := range results {
-		byGroup[r.Group] = append(byGroup[r.Group], r)
-	}
-
-	verb := "switched off"
-	if dryRun {
-		verb = "would switch off"
-	}
-
-	for _, action := range plan.Actions {
-		fmt.Fprintf(a.Out, "%s (%s): %s -> %s\n",
-			action.Group, action.GroupKind, action.Reason, action.Rule)
-		for _, r := range byGroup[action.Group] {
-			suffix := ""
-			if r.OnFor != "" {
-				suffix = fmt.Sprintf(" (on for %s)", r.OnFor)
-			}
-			switch {
-			case r.Error != "":
-				fmt.Fprintf(a.Out, "  FAILED  %s%s: %s\n", r.Name, suffix, r.Error)
-			case dryRun:
-				fmt.Fprintf(a.Out, "  would off  %s%s\n", r.Name, suffix)
-			default:
-				fmt.Fprintf(a.Out, "  off  %s%s\n", r.Name, suffix)
-			}
-		}
-		fmt.Fprintln(a.Out)
-	}
-
-	if verbose {
-		for _, n := range plan.Notes {
-			fmt.Fprintf(a.Out, "  . %s: %s\n", n.Group, n.Text)
-		}
-		if len(plan.Notes) > 0 {
-			fmt.Fprintln(a.Out)
-		}
-	}
-
-	switch n := plan.LightCount(); {
-	case n == 0:
-		msg := "nothing to sweep: no lights matched the rules"
-		if !verbose && len(plan.Notes) > 0 {
-			msg += " (re-run with -v to see why)"
-		}
-		fmt.Fprintln(a.Out, msg)
-	default:
-		fmt.Fprintf(a.Out, "%s %d %s in %d %s\n",
-			verb, n, plural(n, "light", "lights"),
-			len(plan.Actions), plural(len(plan.Actions), "group", "groups"))
-		if dryRun {
-			fmt.Fprintln(a.Out, "this was a dry run; re-run with --no-dry-run to switch them off")
-		}
-	}
-}
-
-// printPlanLog writes the plan as logfmt-style lines, each starting with the
-// sweep time so a log file reads on its own. A run that switches nothing off
-// is a single line.
+// printLog writes the sweep as logfmt-style lines, each starting with the
+// sweep time so the output reads the same in a terminal and in a log file.
+// One line per light, then a summary; a run with nothing to do is one line.
 //
-//	2026-10-05T13:12:03Z dry-run off group="Study" rule=outlier light="Lamp" on_for=12m
-//	2026-10-05T13:12:03Z dry-run swept lights=1 groups=1
-func (a *App) printPlanLog(plan sweep.Plan, results []result, dryRun, verbose bool) {
+//	2026-10-05T13:12:03Z dry-run off group="Study" kind=room rule=outlier light="Sconce" on_for=12m reason="1 of 4 lights on (25% of the group)"
+//	2026-10-05T13:12:03Z dry-run swept lights=1 groups=1 hint="nothing changed; add --no-dry-run to apply"
+func (a *App) printLog(plan sweep.Plan, results []result, dryRun, verbose bool) {
 	prefix := plan.Now.Format(time.RFC3339)
 	if dryRun {
 		prefix += " dry-run"
@@ -298,13 +236,17 @@ func (a *App) printPlanLog(plan sweep.Plan, results []result, dryRun, verbose bo
 		fmt.Fprintf(a.Err, "%s warning msg=%q\n", prefix, w)
 	}
 	for _, r := range results {
-		line := fmt.Sprintf("%s off group=%q rule=%s light=%q", prefix, r.Group, r.Rule, r.Name)
+		event := "off"
+		if r.Error != "" {
+			event = "failed"
+		}
+		line := fmt.Sprintf("%s %s group=%q kind=%s rule=%s light=%q", prefix, event, r.Group, r.Kind, r.Rule, r.Name)
 		if r.OnFor != "" {
 			line += " on_for=" + r.OnFor
 		}
+		line += fmt.Sprintf(" reason=%q", r.Reason)
 		if r.Error != "" {
-			line = fmt.Sprintf("%s failed group=%q rule=%s light=%q error=%q",
-				prefix, r.Group, r.Rule, r.Name, r.Error)
+			line += fmt.Sprintf(" error=%q", r.Error)
 		}
 		fmt.Fprintln(a.Out, line)
 	}
@@ -313,12 +255,13 @@ func (a *App) printPlanLog(plan sweep.Plan, results []result, dryRun, verbose bo
 			fmt.Fprintf(a.Out, "%s note group=%q msg=%q\n", prefix, n.Group, n.Text)
 		}
 	}
-	fmt.Fprintf(a.Out, "%s swept lights=%d groups=%d\n", prefix, plan.LightCount(), len(plan.Actions))
-}
 
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return one
+	summary := fmt.Sprintf("%s swept lights=%d groups=%d", prefix, plan.LightCount(), len(plan.Actions))
+	switch {
+	case dryRun && plan.LightCount() > 0:
+		summary += ` hint="nothing changed; add --no-dry-run to apply"`
+	case plan.LightCount() == 0 && !verbose && len(plan.Notes) > 0:
+		summary += ` hint="add -v to see why each group was left alone"`
 	}
-	return many
+	fmt.Fprintln(a.Out, summary)
 }

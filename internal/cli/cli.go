@@ -107,7 +107,7 @@ Run 'hue <command> -h' for the flags of a command.
 Getting started:
   hue auth            pair with the bridge (press its round button first)
   hue ls              see the rooms, lights, switches and sensors
-  hue sweep --dry-run see what a sweep would switch off
+  hue sweep           see what a sweep would switch off (a dry run)
 
 Environment:
   HUE_CONFIG          config file path

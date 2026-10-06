@@ -99,8 +99,8 @@ func TestSweepIsDryRunByDefault(t *testing.T) {
 	if w := h.bridge.Writes(); len(w) != 0 {
 		t.Fatalf("a default sweep must not change anything, got writes %v", w)
 	}
-	if !strings.Contains(out, "would switch off") {
-		t.Errorf("expected dry-run wording:\n%s", out)
+	if !strings.Contains(out, "dry-run off ") {
+		t.Errorf("expected dry-run lines:\n%s", out)
 	}
 	if !strings.Contains(out, "--no-dry-run") {
 		t.Errorf("expected a hint about --no-dry-run:\n%s", out)
@@ -138,8 +138,8 @@ func TestSweepAppliesWithNoDryRun(t *testing.T) {
 			t.Errorf("%s should not have been touched (recent motion), got %v", id, writes)
 		}
 	}
-	if !strings.Contains(out, "switched off") || strings.Contains(out, "would switch off") {
-		t.Errorf("expected applied wording:\n%s", out)
+	if !strings.Contains(out, "Z off group=") || strings.Contains(out, "dry-run") {
+		t.Errorf("expected applied lines without the dry-run marker:\n%s", out)
 	}
 }
 
@@ -172,7 +172,7 @@ func TestSweepGracePeriodNeedsTwoRuns(t *testing.T) {
 	if w := h.bridge.Writes(); len(w) != 0 {
 		t.Fatalf("the first run should hold everything back, got %v", w)
 	}
-	if !strings.Contains(out, "nothing to sweep") {
+	if !strings.Contains(out, "swept lights=0 groups=0") {
 		t.Errorf("expected nothing to be swept:\n%s", out)
 	}
 
@@ -193,28 +193,39 @@ func TestSweepGracePeriodNeedsTwoRuns(t *testing.T) {
 	}
 }
 
-func TestSweepLogFormat(t *testing.T) {
+func TestSweepOutputIsLogLines(t *testing.T) {
 	h := newHarness(t, `{"min_on_duration": "0s"}`)
 
-	out, _, err := h.run(t, "sweep", "--log", "--rooms", "Kitchen")
+	out, _, err := h.run(t, "sweep", "--rooms", "Kitchen")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `2026-10-01T12:00:00Z dry-run off group="Kitchen" rule=outlier light="Kitchen 1"
-2026-10-01T12:00:00Z dry-run swept lights=1 groups=1
+	want := `2026-10-01T12:00:00Z dry-run off group="Kitchen" kind=room rule=outlier light="Kitchen 1" reason="1 of 5 lights on (20% of the group)"
+2026-10-01T12:00:00Z dry-run swept lights=1 groups=1 hint="nothing changed; add --no-dry-run to apply"
 `
 	if out != want {
-		t.Errorf("--log output:\n%s\nwant:\n%s", out, want)
+		t.Errorf("sweep output:\n%s\nwant:\n%s", out, want)
 	}
 
 	// A run with nothing to do is a single line, and a real run drops the
-	// dry-run marker.
-	out, _, err = h.run(t, "sweep", "--log", "--no-dry-run", "--rooms", "Lounge")
+	// dry-run marker. The second run also has history, so on_for appears.
+	out, _, err = h.runAt(t, h.now.Add(12*time.Minute), "sweep", "--no-dry-run", "--rooms", "Kitchen")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "2026-10-01T12:00:00Z swept lights=0 groups=0\n"; out != want {
-		t.Errorf("quiet --log output = %q, want %q", out, want)
+	want = `2026-10-01T12:12:00Z off group="Kitchen" kind=room rule=outlier light="Kitchen 1" on_for=12m reason="1 of 5 lights on (20% of the group)"
+2026-10-01T12:12:00Z swept lights=1 groups=1
+`
+	if out != want {
+		t.Errorf("applied output:\n%s\nwant:\n%s", out, want)
+	}
+
+	out, _, err = h.run(t, "sweep", "--rooms", "Lounge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "2026-10-01T12:00:00Z dry-run swept lights=0 groups=0 hint=\"add -v to see why each group was left alone\"\n"; out != want {
+		t.Errorf("quiet output = %q, want %q", out, want)
 	}
 }
 
@@ -373,7 +384,7 @@ func TestSweepReportsWriteFailures(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when the bridge rejects the writes")
 	}
-	if !strings.Contains(out, "FAILED") {
+	if !strings.Contains(out, " failed group=") {
 		t.Errorf("expected the failure to be visible:\n%s", out)
 	}
 	if !strings.Contains(err.Error(), "could not be switched off") {

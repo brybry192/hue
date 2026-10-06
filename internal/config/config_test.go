@@ -60,9 +60,6 @@ func TestDefaults(t *testing.T) {
 	if got := c.Sweep.Motion.IdleThreshold.Duration(); got != 15*time.Minute {
 		t.Errorf("idle threshold = %v, want 15m", got)
 	}
-	if got := c.Sweep.MinOnDuration.Duration(); got != 10*time.Minute {
-		t.Errorf("min on duration = %v, want 10m", got)
-	}
 	if !c.Sweep.Motion.IsEnabled() || !c.Sweep.Outlier.IsEnabled() {
 		t.Error("both rules should be enabled by default")
 	}
@@ -130,9 +127,6 @@ func TestLoadPartialFileKeepsDefaults(t *testing.T) {
 	if got := cfg.Sweep.Motion.IdleThreshold.Duration(); got != 25*time.Minute {
 		t.Errorf("idle threshold = %v, want 25m", got)
 	}
-	if got := cfg.Sweep.MinOnDuration.Duration(); got != 10*time.Minute {
-		t.Errorf("min on duration = %v, want the 10m default", got)
-	}
 	if got := cfg.Sweep.Outlier.MaxOnCount; got != 2 {
 		t.Errorf("max on count = %d, want the default 2", got)
 	}
@@ -166,10 +160,10 @@ func TestLoadRejectsBadConfig(t *testing.T) {
 	clearEnv(t)
 	tests := map[string]string{
 		"malformed json":        `{"bridge":`,
-		"bad duration":          `{"sweep": {"min_on_duration": "soon"}}`,
+		"bad duration":          `{"sweep": {"motion": {"idle_threshold": "soon"}}}`,
 		"fraction above one":    `{"sweep": {"outlier": {"max_on_fraction": 1.5}}}`,
 		"negative group size":   `{"sweep": {"outlier": {"min_group_size": -1}}}`,
-		"negative grace period": `{"sweep": {"min_on_duration": "-5m"}}`,
+		"negative idle":         `{"sweep": {"motion": {"idle_threshold": "-5m"}}}`,
 		"unnamed second bridge": `{"bridges": [{"name": "main", "host": "a"}, {"host": "b"}]}`,
 		"duplicate bridge name": `{"bridges": [{"name": "main", "host": "a"}, {"name": "MAIN", "host": "b"}]}`,
 		"bridge and bridges":    `{"bridge": {"host": "a"}, "bridges": [{"host": "b"}]}`,

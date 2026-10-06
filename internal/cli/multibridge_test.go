@@ -81,7 +81,7 @@ func newTwoBridgeHarness(t *testing.T) (*harness, *fakeBridge) {
 	    {"name": "annex", "host": %q, "app_key": "k2", "insecure": true}
 	  ],
 	  "room_aliases": {"Yard": "Porch"},
-	  "sweep": {"min_on_duration": "0s"}
+	  "sweep": {}
 	}`, h.bridge.URL(), annex.URL())
 	if err := os.WriteFile(h.configPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
@@ -169,9 +169,6 @@ func TestSweepIsSkippedWhenABridgeIsDown(t *testing.T) {
 	}
 	if w := h.bridge.Writes(); len(w) != 0 {
 		t.Errorf("nothing should change with a bridge missing, got %v", w)
-	}
-	if _, err := os.Stat(h.statePath); err == nil {
-		t.Error("a skipped sweep should not record state")
 	}
 
 	// Listing carries on with the bridge that answered.

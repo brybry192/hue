@@ -9,7 +9,6 @@ import (
 
 	"github.com/brybry192/hue/internal/config"
 	"github.com/brybry192/hue/internal/hue"
-	"github.com/brybry192/hue/internal/state"
 	"github.com/brybry192/hue/internal/sweep"
 )
 
@@ -25,7 +24,6 @@ type result struct {
 	Reason  string `json:"reason"`
 	LightID string `json:"light_id"`
 	Name    string `json:"name"`
-	OnFor   string `json:"on_for,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 
@@ -37,12 +35,8 @@ func (a *App) runSweep(args []string) error {
 	noDryRun := fs.Bool("no-dry-run", false, "actually switch the lights off")
 	roomList := fs.String("rooms", "", "comma-separated rooms or zones to sweep, overriding the config")
 	idle := fs.Duration("idle", 0, "motion idle threshold, overriding the config")
-	minOn := fs.Duration("min-on", 0, "how long a light must be observed on first, overriding the config")
-	force := fs.Bool("force", false, "ignore the min-on grace period")
 	asJSON := fs.Bool("json", false, "emit JSON")
 	verbose := fs.Bool("v", false, "explain groups that were left alone")
-	statePath := fs.String("state", "", "sweep state file path (default "+defaultStatePathForHelp()+")")
-	noState := fs.Bool("no-state", false, "do not read or write the state file")
 	if err := fs.Parse(args); err != nil {
 		return ErrUsage
 	}
@@ -55,7 +49,7 @@ func (a *App) runSweep(args []string) error {
 	if err != nil {
 		return err
 	}
-	applySweepOverrides(&cfg.Sweep, fs, *idle, *minOn)
+	applySweepOverrides(&cfg.Sweep, fs, *idle)
 
 	h, err := a.home(cfg)
 	if err != nil {
@@ -77,39 +71,13 @@ func (a *App) runSweep(args []string) error {
 		return fmt.Errorf("skipping sweep, not every bridge could be read: %w", joinBridgeErrors(failed))
 	}
 
-	// Load history before planning so the grace period is judged against
-	// previous runs, not this one.
-	store, err := a.loadState(*statePath, *noState)
-	if err != nil {
-		return err
-	}
-
-	now := a.now()
 	plan := sweep.Build(sweep.Inputs{
 		Groups:        snap.Groups,
 		Cfg:           cfg.Sweep,
-		OnSince:       store.OnSince,
-		Now:           now,
-		IgnoreMinOn:   *force,
+		Now:           a.now(),
 		RoomsOverride: splitList(*roomList),
 	})
-
-	// Record what we saw, whether or not we act on it.
-	lights := make([]hue.LightView, 0, len(snap.Lights))
-	for _, l := range snap.Lights {
-		lights = append(lights, l)
-	}
-	store.Observe(lights, now)
-
-	results, actErr := a.applyPlan(ctx, h, snap, plan, dry, store)
-
-	// A dry run still records observations, otherwise the grace period could
-	// never elapse for someone who is only ever dry-running.
-	if !*noState {
-		if err := store.Save(); err != nil {
-			fmt.Fprintf(a.Err, "hue: warning: could not save sweep state: %v\n", err)
-		}
-	}
+	results, actErr := a.applyPlan(ctx, h, snap, plan, dry)
 
 	if *asJSON {
 		out := struct {
@@ -131,45 +99,16 @@ func (a *App) runSweep(args []string) error {
 
 // applySweepOverrides folds command-line flags into the sweep config, only for
 // flags the user actually passed.
-func applySweepOverrides(s *config.Sweep, fs *flag.FlagSet, idle, minOn time.Duration) {
+func applySweepOverrides(s *config.Sweep, fs *flag.FlagSet, idle time.Duration) {
 	fs.Visit(func(f *flag.Flag) {
-		switch f.Name {
-		case "idle":
+		if f.Name == "idle" {
 			s.Motion.IdleThreshold = config.Duration(idle)
-		case "min-on":
-			s.MinOnDuration = config.Duration(minOn)
 		}
 	})
 }
 
-func defaultStatePathForHelp() string {
-	if p, err := state.DefaultPath(); err == nil {
-		return p
-	}
-	return "~/.local/state/hue/sweep-state.json"
-}
-
-// loadState opens the state store, or an in-memory throwaway when disabled.
-func (a *App) loadState(path string, disabled bool) (*state.Store, error) {
-	if disabled {
-		// An empty path that is never saved behaves as "no history".
-		return state.Load(devNullState())
-	}
-	store, err := state.Load(path)
-	if err != nil {
-		return nil, err
-	}
-	return store, nil
-}
-
-// devNullState returns a path that cannot exist, giving a store with no
-// history. Save is never called on it.
-func devNullState() string {
-	return "/nonexistent/hue-sweep-state.json"
-}
-
 // applyPlan switches off the planned lights unless this is a dry run.
-func (a *App) applyPlan(ctx context.Context, h *home, snap *hue.Snapshot, plan sweep.Plan, dryRun bool, store *state.Store) ([]result, error) {
+func (a *App) applyPlan(ctx context.Context, h *home, snap *hue.Snapshot, plan sweep.Plan, dryRun bool) ([]result, error) {
 	var results []result
 	var failures int
 
@@ -182,9 +121,6 @@ func (a *App) applyPlan(ctx context.Context, h *home, snap *hue.Snapshot, plan s
 				Reason:  action.Reason,
 				LightID: target.LightID,
 				Name:    target.Name,
-			}
-			if target.HasOnFor {
-				r.OnFor = hue.ShortDuration(target.OnFor)
 			}
 			if dryRun {
 				results = append(results, r)
@@ -200,10 +136,6 @@ func (a *App) applyPlan(ctx context.Context, h *home, snap *hue.Snapshot, plan s
 			if err != nil {
 				r.Error = err.Error()
 				failures++
-			} else {
-				// The light is off now, so its on-timer should restart from
-				// the next time it comes on.
-				store.Forget(target.LightID)
 			}
 			results = append(results, r)
 
@@ -224,7 +156,7 @@ func (a *App) applyPlan(ctx context.Context, h *home, snap *hue.Snapshot, plan s
 // sweep time so the output reads the same in a terminal and in a log file.
 // One line per light, then a summary; a run with nothing to do is one line.
 //
-//	2026-10-05T13:12:03Z dry-run off group="Study" kind=room rule=outlier light="Sconce" on_for=12m reason="1 of 4 lights on (25% of the group)"
+//	2026-10-05T13:12:03Z dry-run off group="Study" kind=room rule=outlier light="Sconce" reason="1 of 4 lights on (25% of the group)"
 //	2026-10-05T13:12:03Z dry-run swept lights=1 groups=1 hint="nothing changed; add --no-dry-run to apply"
 func (a *App) printLog(plan sweep.Plan, results []result, dryRun, verbose bool) {
 	prefix := plan.Now.Format(time.RFC3339)
@@ -241,9 +173,6 @@ func (a *App) printLog(plan sweep.Plan, results []result, dryRun, verbose bool) 
 			event = "failed"
 		}
 		line := fmt.Sprintf("%s %s group=%q kind=%s rule=%s light=%q", prefix, event, r.Group, r.Kind, r.Rule, r.Name)
-		if r.OnFor != "" {
-			line += " on_for=" + r.OnFor
-		}
 		line += fmt.Sprintf(" reason=%q", r.Reason)
 		if r.Error != "" {
 			line += fmt.Sprintf(" error=%q", r.Error)

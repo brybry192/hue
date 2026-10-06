@@ -287,7 +287,6 @@ func newFakeBridge(t *testing.T, now time.Time) *fakeBridge {
 type harness struct {
 	bridge     *fakeBridge
 	configPath string
-	statePath  string
 	now        time.Time
 }
 
@@ -300,7 +299,6 @@ func newHarness(t *testing.T, sweepCfg string) *harness {
 	h := &harness{
 		bridge:     bridge,
 		configPath: filepath.Join(dir, "config.json"),
-		statePath:  filepath.Join(dir, "state.json"),
 		now:        now,
 	}
 
@@ -318,7 +316,6 @@ func newHarness(t *testing.T, sweepCfg string) *harness {
 
 	// Keep the developer's real config and state out of the test.
 	t.Setenv("HUE_CONFIG", h.configPath)
-	t.Setenv("HUE_STATE", h.statePath)
 	t.Setenv("HUE_BRIDGE_HOST", "")
 	t.Setenv("HUE_APP_KEY", "")
 	return h
@@ -327,22 +324,11 @@ func newHarness(t *testing.T, sweepCfg string) *harness {
 // run executes a command, returning stdout, stderr and the error.
 func (h *harness) run(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
-	return h.runAt(t, h.now, args...)
-}
-
-// runAt executes a command with the clock set to a specific instant, which is
-// how the grace period is exercised without sleeping.
-func (h *harness) runAt(t *testing.T, now time.Time, args ...string) (string, string, error) {
-	t.Helper()
 	var out, errOut strings.Builder
-	app := &App{Out: &out, Err: &errOut, Now: func() time.Time { return now }}
+	app := &App{Out: &out, Err: &errOut, Now: func() time.Time { return h.now }}
 
 	full := append([]string(nil), args...)
 	full = append(full, "--config", h.configPath)
-	// Only some commands take --state; passing it elsewhere is a flag error.
-	if len(args) > 0 && (args[0] == "sweep" || args[0] == "status") {
-		full = append(full, "--state", h.statePath)
-	}
 	err := app.Run(full)
 	return out.String(), errOut.String(), err
 }

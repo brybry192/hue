@@ -7,13 +7,11 @@ import (
 	"text/tabwriter"
 
 	"github.com/brybry192/hue/internal/hue"
-	"github.com/brybry192/hue/internal/state"
 )
 
 func (a *App) runStatus(args []string) error {
 	fs, cfgPath := a.newFlagSet("status", "status [flags]")
 	asJSON := fs.Bool("json", false, "emit JSON")
-	statePath := fs.String("state", "", "sweep state file path")
 	if err := fs.Parse(args); err != nil {
 		return ErrUsage
 	}
@@ -82,8 +80,6 @@ func (a *App) runStatus(args []string) error {
 		LightsOn   int         `json:"lights_on"`
 		Sensors    int         `json:"sensors"`
 		Controls   int         `json:"controls"`
-		SweptState string      `json:"state_file,omitempty"`
-		Tracked    int         `json:"tracked_on,omitempty"`
 		ConfigPath string      `json:"config_path,omitempty"`
 		SweepRooms int         `json:"sweep_rooms"`
 	}
@@ -97,10 +93,6 @@ func (a *App) runStatus(args []string) error {
 		Controls:   controls,
 		ConfigPath: cfg.Path(),
 		SweepRooms: len(cfg.Sweep.Rooms),
-	}
-	if store, err := state.Load(*statePath); err == nil {
-		out.SweptState = store.Path()
-		out.Tracked = store.Len()
 	}
 
 	if *asJSON {
@@ -137,9 +129,6 @@ func (a *App) runStatus(args []string) error {
 	fmt.Fprintf(tw, "motion sensors\t%d\n", out.Sensors)
 	fmt.Fprintf(tw, "switches/remotes\t%d\n", out.Controls)
 	fmt.Fprintf(tw, "config\t%s\n", out.ConfigPath)
-	if out.SweptState != "" {
-		fmt.Fprintf(tw, "sweep state\t%s (%d lights tracked on)\n", out.SweptState, out.Tracked)
-	}
 	if len(cfg.Sweep.Rooms) == 0 {
 		fmt.Fprintf(tw, "sweep scope\tevery room and zone\n")
 	} else {
@@ -150,7 +139,6 @@ func (a *App) runStatus(args []string) error {
 	fmt.Fprintf(tw, "outlier rule\t%s, up to %d on and at most %.0f%% of a group of %d+\n",
 		enabledWord(cfg.Sweep.Outlier.IsEnabled()), cfg.Sweep.Outlier.MaxOnCount,
 		cfg.Sweep.Outlier.MaxOnFraction*100, cfg.Sweep.Outlier.MinGroupSize)
-	fmt.Fprintf(tw, "grace period\t%s\n", cfg.Sweep.MinOnDuration)
 	return tw.Flush()
 }
 

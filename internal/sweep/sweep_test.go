@@ -74,17 +74,10 @@ func room(name string, lights []hue.LightView, sensors ...hue.SensorView) hue.Gr
 // baseCfg is the shipped default, which the tests then tweak.
 func baseCfg() config.Sweep { return config.Default().Sweep }
 
-// onForever reports every light as having been on long enough to clear any
-// grace period.
-func onForever(string) (time.Time, bool) { return testNow.Add(-24 * time.Hour), true }
-
 func build(t *testing.T, in Inputs) Plan {
 	t.Helper()
 	if in.Now.IsZero() {
 		in.Now = testNow
-	}
-	if in.OnSince == nil {
-		in.OnSince = onForever
 	}
 	return Build(in)
 }
@@ -250,86 +243,6 @@ func TestBuildRules(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestGracePeriod(t *testing.T) {
-	cfg := baseCfg() // min_on_duration defaults to 10m
-	group := room("Kitchen", lightsOnOf(5, 1))
-
-	t.Run("a light just switched on is held back", func(t *testing.T) {
-		plan := build(t, Inputs{
-			Groups: []hue.GroupView{group}, Cfg: cfg,
-			OnSince: func(string) (time.Time, bool) { return testNow.Add(-time.Minute), true },
-		})
-		if n := plan.LightCount(); n != 0 {
-			t.Fatalf("switched off %d lights, want 0", n)
-		}
-		if !hasNote(plan, "under the 10m grace period") {
-			t.Errorf("expected a note explaining the hold, got %+v", plan.Notes)
-		}
-	})
-
-	t.Run("a light never seen before is held back", func(t *testing.T) {
-		plan := build(t, Inputs{
-			Groups: []hue.GroupView{group}, Cfg: cfg,
-			OnSince: func(string) (time.Time, bool) { return time.Time{}, false },
-		})
-		if n := plan.LightCount(); n != 0 {
-			t.Fatalf("switched off %d lights, want 0", n)
-		}
-		if !hasNote(plan, "first time seen on") {
-			t.Errorf("expected a first-sighting note, got %+v", plan.Notes)
-		}
-	})
-
-	t.Run("a light on for longer than the grace period is swept", func(t *testing.T) {
-		plan := build(t, Inputs{
-			Groups: []hue.GroupView{group}, Cfg: cfg,
-			OnSince: func(string) (time.Time, bool) { return testNow.Add(-11 * time.Minute), true },
-		})
-		if n := plan.LightCount(); n != 1 {
-			t.Fatalf("switched off %d lights, want 1", n)
-		}
-		got := plan.Actions[0].Lights[0]
-		if !got.HasOnFor || got.OnFor != 11*time.Minute {
-			t.Errorf("OnFor = %v (has=%v), want 11m", got.OnFor, got.HasOnFor)
-		}
-	})
-
-	t.Run("force ignores the grace period", func(t *testing.T) {
-		plan := build(t, Inputs{
-			Groups: []hue.GroupView{group}, Cfg: cfg, IgnoreMinOn: true,
-			OnSince: func(string) (time.Time, bool) { return time.Time{}, false },
-		})
-		if n := plan.LightCount(); n != 1 {
-			t.Fatalf("switched off %d lights, want 1", n)
-		}
-	})
-
-	t.Run("a zero grace period acts immediately", func(t *testing.T) {
-		c := baseCfg()
-		c.MinOnDuration = 0
-		plan := build(t, Inputs{
-			Groups: []hue.GroupView{group}, Cfg: c,
-			OnSince: func(string) (time.Time, bool) { return time.Time{}, false },
-		})
-		if n := plan.LightCount(); n != 1 {
-			t.Fatalf("switched off %d lights, want 1", n)
-		}
-	})
-
-	t.Run("a clock that went backwards does not report a negative duration", func(t *testing.T) {
-		plan := build(t, Inputs{
-			Groups: []hue.GroupView{group}, Cfg: cfg, IgnoreMinOn: true,
-			OnSince: func(string) (time.Time, bool) { return testNow.Add(time.Hour), true },
-		})
-		if n := plan.LightCount(); n != 1 {
-			t.Fatalf("switched off %d lights, want 1", n)
-		}
-		if got := plan.Actions[0].Lights[0].OnFor; got < 0 {
-			t.Errorf("OnFor = %v, want >= 0", got)
-		}
-	})
 }
 
 func TestExclusions(t *testing.T) {
@@ -632,14 +545,4 @@ func TestEmptyInputs(t *testing.T) {
 	if plan.LightCount() != 0 || len(plan.Actions) != 0 {
 		t.Fatalf("expected an empty plan, got %+v", plan)
 	}
-}
-
-// hasNote reports whether any note contains the substring.
-func hasNote(p Plan, substr string) bool {
-	for _, n := range p.Notes {
-		if strings.Contains(n.Text, substr) {
-			return true
-		}
-	}
-	return false
 }

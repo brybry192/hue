@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/brybry192/hue/internal/hue"
 )
@@ -90,7 +89,7 @@ func TestListJSON(t *testing.T) {
 }
 
 func TestSweepIsDryRunByDefault(t *testing.T) {
-	h := newHarness(t, `{"min_on_duration": "0s"}`)
+	h := newHarness(t, "")
 
 	out, _, err := h.run(t, "sweep")
 	if err != nil {
@@ -108,8 +107,7 @@ func TestSweepIsDryRunByDefault(t *testing.T) {
 }
 
 func TestSweepAppliesWithNoDryRun(t *testing.T) {
-	// A zero grace period keeps this test to a single run.
-	h := newHarness(t, `{"min_on_duration": "0s"}`)
+	h := newHarness(t, "")
 
 	out, _, err := h.run(t, "sweep", "--no-dry-run")
 	if err != nil {
@@ -144,7 +142,7 @@ func TestSweepAppliesWithNoDryRun(t *testing.T) {
 }
 
 func TestSweepRulesAreReportedWithReasons(t *testing.T) {
-	h := newHarness(t, `{"min_on_duration": "0s"}`)
+	h := newHarness(t, "")
 	out, _, err := h.run(t, "sweep")
 	if err != nil {
 		t.Fatal(err)
@@ -160,41 +158,8 @@ func TestSweepRulesAreReportedWithReasons(t *testing.T) {
 	}
 }
 
-func TestSweepGracePeriodNeedsTwoRuns(t *testing.T) {
-	// The shipped default: a light must be seen on for 10 minutes first.
-	h := newHarness(t, `{"min_on_duration": "10m"}`)
-
-	// First run: nothing has any history, so nothing is touched.
-	out, _, err := h.run(t, "sweep", "--no-dry-run")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if w := h.bridge.Writes(); len(w) != 0 {
-		t.Fatalf("the first run should hold everything back, got %v", w)
-	}
-	if !strings.Contains(out, "swept lights=0 groups=0") {
-		t.Errorf("expected nothing to be swept:\n%s", out)
-	}
-
-	// Still inside the grace period.
-	if _, _, err := h.runAt(t, h.now.Add(5*time.Minute), "sweep", "--no-dry-run"); err != nil {
-		t.Fatal(err)
-	}
-	if w := h.bridge.Writes(); len(w) != 0 {
-		t.Fatalf("five minutes in, nothing should change yet, got %v", w)
-	}
-
-	// Past the grace period: now it acts.
-	if _, _, err := h.runAt(t, h.now.Add(11*time.Minute), "sweep", "--no-dry-run"); err != nil {
-		t.Fatal(err)
-	}
-	if w := h.bridge.Writes(); len(w) == 0 {
-		t.Fatal("after the grace period the sweep should act")
-	}
-}
-
 func TestSweepOutputIsLogLines(t *testing.T) {
-	h := newHarness(t, `{"min_on_duration": "0s"}`)
+	h := newHarness(t, "")
 
 	out, _, err := h.run(t, "sweep", "--rooms", "Kitchen")
 	if err != nil {
@@ -207,14 +172,14 @@ func TestSweepOutputIsLogLines(t *testing.T) {
 		t.Errorf("sweep output:\n%s\nwant:\n%s", out, want)
 	}
 
-	// A run with nothing to do is a single line, and a real run drops the
-	// dry-run marker. The second run also has history, so on_for appears.
-	out, _, err = h.runAt(t, h.now.Add(12*time.Minute), "sweep", "--no-dry-run", "--rooms", "Kitchen")
+	// A real run drops the dry-run marker, and a run with nothing to do is
+	// a single line.
+	out, _, err = h.run(t, "sweep", "--no-dry-run", "--rooms", "Kitchen")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = `2026-10-01T12:12:00Z off group="Kitchen" kind=room rule=outlier light="Kitchen 1" on_for=12m reason="1 of 5 lights on (20% of the group)"
-2026-10-01T12:12:00Z swept lights=1 groups=1
+	want = `2026-10-01T12:00:00Z off group="Kitchen" kind=room rule=outlier light="Kitchen 1" reason="1 of 5 lights on (20% of the group)"
+2026-10-01T12:00:00Z swept lights=1 groups=1
 `
 	if out != want {
 		t.Errorf("applied output:\n%s\nwant:\n%s", out, want)
@@ -232,7 +197,7 @@ func TestSweepOutputIsLogLines(t *testing.T) {
 func TestSweepIgnoresUnreachableLights(t *testing.T) {
 	// Kitchen 1 is the Kitchen straggler, but its power has been cut. The
 	// bridge still reports it as on.
-	h := newHarness(t, `{"min_on_duration": "0s"}`)
+	h := newHarness(t, "")
 	h.bridge.cutPower("kitchen1")
 
 	out, _, err := h.run(t, "sweep", "--no-dry-run", "-v", "--rooms", "Kitchen")
@@ -255,18 +220,8 @@ func TestSweepIgnoresUnreachableLights(t *testing.T) {
 	}
 }
 
-func TestSweepForceSkipsGracePeriod(t *testing.T) {
-	h := newHarness(t, `{"min_on_duration": "10m"}`)
-	if _, _, err := h.run(t, "sweep", "--no-dry-run", "--force"); err != nil {
-		t.Fatal(err)
-	}
-	if w := h.bridge.Writes(); len(w) == 0 {
-		t.Fatal("--force should bypass the grace period")
-	}
-}
-
 func TestSweepRoomScope(t *testing.T) {
-	h := newHarness(t, `{"min_on_duration": "0s", "rooms": ["Kitchen"]}`)
+	h := newHarness(t, `{"rooms": ["Kitchen"]}`)
 	if _, _, err := h.run(t, "sweep", "--no-dry-run"); err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +233,7 @@ func TestSweepRoomScope(t *testing.T) {
 }
 
 func TestSweepRoomsFlagOverridesConfig(t *testing.T) {
-	h := newHarness(t, `{"min_on_duration": "0s", "rooms": ["Kitchen"]}`)
+	h := newHarness(t, `{"rooms": ["Kitchen"]}`)
 	if _, _, err := h.run(t, "sweep", "--no-dry-run", "--rooms", "Hallway"); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +249,7 @@ func TestSweepRoomsFlagOverridesConfig(t *testing.T) {
 }
 
 func TestSweepUnknownConfiguredRoomWarns(t *testing.T) {
-	h := newHarness(t, `{"min_on_duration": "0s", "rooms": ["Kitchen", "Dungeon"]}`)
+	h := newHarness(t, `{"rooms": ["Kitchen", "Dungeon"]}`)
 	_, errOut, err := h.run(t, "sweep")
 	if err != nil {
 		t.Fatal(err)
@@ -307,7 +262,7 @@ func TestSweepUnknownConfiguredRoomWarns(t *testing.T) {
 func TestSweepIdleFlagOverridesThreshold(t *testing.T) {
 	// A 45 minute threshold is longer than the Hallway's 30 minute idle, so
 	// the motion rule should no longer fire there.
-	h := newHarness(t, `{"min_on_duration": "0s"}`)
+	h := newHarness(t, "")
 	if _, _, err := h.run(t, "sweep", "--no-dry-run", "--idle", "45m"); err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +274,7 @@ func TestSweepIdleFlagOverridesThreshold(t *testing.T) {
 }
 
 func TestSweepVerboseExplainsSkips(t *testing.T) {
-	h := newHarness(t, `{"min_on_duration": "0s"}`)
+	h := newHarness(t, "")
 	out, _, err := h.run(t, "sweep", "-v")
 	if err != nil {
 		t.Fatal(err)
@@ -334,7 +289,7 @@ func TestSweepVerboseExplainsSkips(t *testing.T) {
 }
 
 func TestSweepJSON(t *testing.T) {
-	h := newHarness(t, `{"min_on_duration": "0s"}`)
+	h := newHarness(t, "")
 	out, _, err := h.run(t, "sweep", "--json")
 	if err != nil {
 		t.Fatal(err)
@@ -377,7 +332,7 @@ func TestSweepJSON(t *testing.T) {
 }
 
 func TestSweepReportsWriteFailures(t *testing.T) {
-	h := newHarness(t, `{"min_on_duration": "0s"}`)
+	h := newHarness(t, "")
 	h.bridge.failWrites = true
 
 	out, _, err := h.run(t, "sweep", "--no-dry-run")
@@ -389,16 +344,6 @@ func TestSweepReportsWriteFailures(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "could not be switched off") {
 		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestSweepNoStateDoesNotWriteStateFile(t *testing.T) {
-	h := newHarness(t, `{"min_on_duration": "0s"}`)
-	if _, _, err := h.run(t, "sweep", "--no-state"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readFileIfExists(h.statePath); err == nil {
-		t.Error("--no-state should not create a state file")
 	}
 }
 
@@ -486,7 +431,7 @@ func TestStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"bridge", "001788FFFE000001", "rooms", "lights", "motion rule", "outlier rule", "grace period",
+		"bridge", "001788FFFE000001", "rooms", "lights", "motion rule", "outlier rule",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status output is missing %q\n%s", want, out)

@@ -111,7 +111,6 @@ Getting started:
 
 Environment:
   HUE_CONFIG          config file path
-  HUE_STATE           sweep state file path
   HUE_BRIDGE_HOST     bridge address, overriding the config (one bridge only)
   HUE_APP_KEY         bridge application key, overriding the config (one bridge only)
 `)

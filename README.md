@@ -7,9 +7,9 @@ notices. `hue sweep` notices.
 
 ```
 $ hue sweep
-2026-10-05T13:12:03Z dry-run off group="Hallway" kind=room rule=motion-idle light="Hall 1" on_for=1h12m reason="no motion for 23m (threshold 15m)"
-2026-10-05T13:12:03Z dry-run off group="Hallway" kind=room rule=motion-idle light="Hall 2" on_for=1h12m reason="no motion for 23m (threshold 15m)"
-2026-10-05T13:12:03Z dry-run off group="Kitchen" kind=room rule=outlier light="Kitchen 3" on_for=42m reason="1 of 5 lights on (20% of the group)"
+2026-10-05T13:12:03Z dry-run off group="Hallway" kind=room rule=motion-idle light="Hall 1" reason="no motion for 23m (threshold 15m)"
+2026-10-05T13:12:03Z dry-run off group="Hallway" kind=room rule=motion-idle light="Hall 2" reason="no motion for 23m (threshold 15m)"
+2026-10-05T13:12:03Z dry-run off group="Kitchen" kind=room rule=outlier light="Kitchen 3" reason="1 of 5 lights on (20% of the group)"
 2026-10-05T13:12:03Z dry-run swept lights=3 groups=2 hint="nothing changed; add --no-dry-run to apply"
 ```
 
@@ -79,17 +79,16 @@ lights already chosen as off and looks again, until nothing more qualifies.
 Groups that only qualified this way say `once other groups were swept`. To
 keep a lamp on whatever its neighbours do, list it in `exclude_lights`.
 
-### The grace period
+### No memory between runs
 
-The Hue API exposes no "when did this light turn on" timestamp, so the tool
-keeps its own record of what it has seen. A light must have been observed on
-for `min_on_duration` (default **10m**) before it can be switched off.
+The sweep keeps no state of its own. Each run decides from what the bridges
+report at that moment: the lights' on/off state and the motion sensors' own
+timestamps. Run it every hour or few hours and a light that was lost stays on
+until the next run at most.
 
-This is what stops the sweep fighting you: switch a light on and a sweep two
-minutes later will leave it be. The cost is that the first ever run switches
-nothing off — it has no history yet — so on a 5-minute cron the tool starts
-acting on the second run. `--force` skips the wait, and `min_on_duration: "0s"`
-disables it.
+The Hue API has no "when did this light turn on" timestamp, so the outlier rule
+cannot tell a straggler from a lamp switched on a minute ago in a room with no
+sensor. Where that matters, a motion sensor or `exclude_lights` protects it.
 
 ### Other safeties
 
@@ -188,8 +187,7 @@ hue ls --on                      # only lights that are on
 hue ls --rooms --json            # machine readable, rooms only
 hue sweep --no-dry-run           # actually do it
 hue sweep --rooms Kitchen,Outside    # override the configured scope
-hue sweep --idle 30m --min-on 20m    # override thresholds for one run
-hue sweep --force                # ignore the grace period
+hue sweep --idle 30m             # override the motion threshold for one run
 hue sweep -v                     # explain the groups it left alone
 hue sweep --json                 # the full plan and results as JSON
 hue off Kitchen --no-dry-run     # flags may come before or after the target
@@ -234,7 +232,6 @@ precedence: `--config`, `$HUE_CONFIG`, `$XDG_CONFIG_HOME/hue/config.json`,
   "sweep": {
     "rooms": ["Kitchen", "Hallway", "Outside"],
     "exclude_lights": ["Night Light", "porch *"],
-    "min_on_duration": "10m",
     "include_plugs": true,
     "outlier": {
       "enabled": true,
@@ -256,7 +253,6 @@ precedence: `--config`, `$HUE_CONFIG`, `$XDG_CONFIG_HOME/hue/config.json`,
 | `room_aliases` | `{}` | Rename rooms or zones before bridges are merged, case-insensitive |
 | `sweep.rooms` | `[]` (everything) | Rooms **and zones** to sweep, by name, case-insensitive |
 | `sweep.exclude_lights` | `[]` | Never switch these off; wildcards allowed |
-| `sweep.min_on_duration` | `10m` | Grace period before a light may be swept |
 | `sweep.include_plugs` | `true` | Allow smart plugs to be switched off |
 | `sweep.outlier.*` | see above | The outlier rule's thresholds |
 | `sweep.motion.idle_threshold` | `15m` | How long a room must be still |
@@ -266,15 +262,15 @@ its default. `enabled` is deliberately a tri-state — omit it for the default,
 or set it explicitly to `false` to turn a rule off.
 
 Environment overrides: `HUE_BRIDGE_HOST`, `HUE_APP_KEY` (only with a single
-bridge), `HUE_CONFIG`, `HUE_STATE`.
+bridge), `HUE_CONFIG`.
 
 Older files with a single `"bridge": {...}` entry still load, as a one-bridge
 list; the next `hue auth` rewrites it as `bridges`.
 
 ## Running it on a schedule
 
-The sweep is designed to be run repeatedly and is safe to run often; the grace
-period means a light has to be genuinely forgotten before anything happens.
+The sweep is meant to run occasionally, every hour to every few hours, to catch
+lights that were lost.
 
 A `launchd` agent at `~/Library/LaunchAgents/com.brybry192.hue.sweep.plist`:
 
@@ -291,7 +287,7 @@ A `launchd` agent at `~/Library/LaunchAgents/com.brybry192.hue.sweep.plist`:
     <string>sweep</string>
     <string>--no-dry-run</string>
   </array>
-  <key>StartInterval</key><integer>300</integer>
+  <key>StartInterval</key><integer>3600</integer>
   <key>StandardOutPath</key><string>/tmp/hue-sweep.log</string>
   <key>StandardErrorPath</key><string>/tmp/hue-sweep.err</string>
 </dict>
@@ -302,10 +298,10 @@ A `launchd` agent at `~/Library/LaunchAgents/com.brybry192.hue.sweep.plist`:
 launchctl load ~/Library/LaunchAgents/com.brybry192.hue.sweep.plist
 ```
 
-Or cron, every five minutes:
+Or cron, hourly:
 
 ```cron
-*/5 * * * * /usr/local/bin/hue sweep --no-dry-run >> /tmp/hue-sweep.log 2>&1
+0 * * * * /usr/local/bin/hue sweep --no-dry-run >> /tmp/hue-sweep.log 2>&1
 ```
 
 The log then gains one line per light switched off and one summary line per
@@ -329,7 +325,6 @@ internal/hue/               the CLIP v2 client
   model.go                  resources -> rooms/zones/lights/sensors
   merge.go                  several bridges -> one home
 internal/config/            config file, defaults, validation
-internal/state/             what the last sweep saw ("on since")
 internal/sweep/             the decision logic, as a pure function
 ```
 
@@ -370,15 +365,15 @@ go test ./internal/sweep -v      # just the decision rules
 The suite needs no bridge and no network.
 
 - **`internal/sweep`** — the rules, exhaustively: outlier boundaries, motion
-  idle and the presence veto, sensors that cannot be trusted, the grace period,
-  exclusions and wildcards, plugs, room scoping, and a light that belongs to
+  idle and the presence veto, sensors that cannot be trusted, overlapping
+  groups swept in rounds, exclusions and wildcards, plugs, room scoping, and a light that belongs to
   both a room and a zone.
 - **`internal/hue`** — assembling rooms and zones from raw resources, including
   multi-light devices, dangling references and sensor inheritance; device
   classification across real Hue model IDs; duration formatting.
-- **`internal/config` / `internal/state`** — defaults surviving a partial file,
-  the tri-state `enabled`, validation, `0600` permissions, atomic writes, and
-  the on-since bookkeeping that the grace period relies on.
+- **`internal/config`** — defaults surviving a partial file, the tri-state
+  `enabled`, validation, several bridges, `0600` permissions and atomic
+  writes.
 - **`internal/cli`** — every command end to end against a fake bridge
   (`httptest` TLS server) with a deliberately varied topology: a room with one
   straggler, a room gone idle, a room with someone in it, and a zone overlapping
@@ -561,9 +556,9 @@ the new certificate, or set `"insecure": true` on that bridge to stop pinning.
 
 ### The sweep found nothing
 
-Run `hue sweep -v`, which prints why each group was left alone. The two usual
-answers are the grace period on a first run (`held: first time seen on`) and
-recent motion (`someone is probably there`).
+Run `hue sweep -v`, which prints why each group was left alone. The usual
+answers are recent motion (`someone is probably there`) and too many lights on
+for them to look forgotten (`exceeds max_on_count`).
 
 ### `no bridges found`
 

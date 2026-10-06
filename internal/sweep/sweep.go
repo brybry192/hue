@@ -30,10 +30,6 @@ const (
 type Target struct {
 	LightID string `json:"light_id"`
 	Name    string `json:"name"`
-	// OnFor is how long the light has been observed on. Valid only when
-	// HasOnFor is true.
-	OnFor    time.Duration `json:"on_for,omitempty"`
-	HasOnFor bool          `json:"-"`
 }
 
 // Action is a group's worth of lights to switch off, and why.
@@ -82,13 +78,7 @@ func (p Plan) LightCount() int {
 type Inputs struct {
 	Groups []hue.GroupView
 	Cfg    config.Sweep
-	// OnSince reports when a light was first observed on. A nil function
-	// means no history is available, which with a non-zero MinOnDuration
-	// holds every light back for one run.
-	OnSince func(lightID string) (time.Time, bool)
-	Now     time.Time
-	// IgnoreMinOn skips the MinOnDuration grace period.
-	IgnoreMinOn bool
+	Now    time.Time
 	// RoomsOverride replaces Cfg.Rooms when non-nil.
 	RoomsOverride []string
 }
@@ -239,10 +229,11 @@ func evaluate(g hue.GroupView, in Inputs, claimed map[string]bool) (*Action, []N
 		return nil, notes
 	}
 
-	targets, held := applyGracePeriod(candidates, in)
-	for _, h := range held {
-		note("%s", h)
+	targets := make([]Target, 0, len(candidates))
+	for _, l := range candidates {
+		targets = append(targets, Target{LightID: l.ID, Name: l.Name})
 	}
+	sort.SliceStable(targets, func(i, j int) bool { return targets[i].Name < targets[j].Name })
 
 	// Drop lights another group already claimed.
 	var final []Target
@@ -377,43 +368,4 @@ func matchesAny(l hue.LightView, patterns []string) bool {
 		}
 	}
 	return false
-}
-
-// applyGracePeriod keeps back lights that have not been on long enough, which
-// is how the sweep avoids switching off a light someone just turned on.
-func applyGracePeriod(candidates []hue.LightView, in Inputs) (targets []Target, held []string) {
-	grace := in.Cfg.MinOnDuration.Duration()
-	for _, l := range candidates {
-		t := Target{LightID: l.ID, Name: l.Name}
-
-		var onSince time.Time
-		known := false
-		if in.OnSince != nil {
-			onSince, known = in.OnSince(l.ID)
-		}
-		if known {
-			t.OnFor = in.Now.Sub(onSince)
-			if t.OnFor < 0 {
-				t.OnFor = 0
-			}
-			t.HasOnFor = true
-		}
-
-		if in.IgnoreMinOn || grace <= 0 {
-			targets = append(targets, t)
-			continue
-		}
-		switch {
-		case !known:
-			held = append(held, fmt.Sprintf("%s held: first time seen on, needs %s on record",
-				l.Name, hue.ShortDuration(grace)))
-		case t.OnFor < grace:
-			held = append(held, fmt.Sprintf("%s held: on for %s, under the %s grace period",
-				l.Name, hue.ShortDuration(t.OnFor), hue.ShortDuration(grace)))
-		default:
-			targets = append(targets, t)
-		}
-	}
-	sort.SliceStable(targets, func(i, j int) bool { return targets[i].Name < targets[j].Name })
-	return targets, held
 }

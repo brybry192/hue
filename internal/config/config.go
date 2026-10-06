@@ -100,10 +100,6 @@ type Sweep struct {
 	Rooms []string `json:"rooms"`
 	// ExcludeLights never get switched off, matched by light or device name.
 	ExcludeLights []string `json:"exclude_lights,omitempty"`
-	// MinOnDuration is how long a light must have been observed on before the
-	// sweep will switch it off. It stops the sweep fighting someone who just
-	// turned a light on, at the cost of needing two runs to act.
-	MinOnDuration Duration `json:"min_on_duration"`
 	// IncludePlugs allows smart plugs to be switched off. On by default; turn
 	// it off, or list the plug in exclude_lights, if it powers something
 	// that must stay on.
@@ -144,9 +140,8 @@ func Default() Config {
 	return Config{
 		Bridges: []Bridge{},
 		Sweep: Sweep{
-			Rooms:         []string{},
-			MinOnDuration: Duration(10 * time.Minute),
-			IncludePlugs:  true,
+			Rooms:        []string{},
+			IncludePlugs: true,
 			Outlier: Outlier{
 				Enabled:       boolPtr(true),
 				MinGroupSize:  3,
@@ -299,9 +294,6 @@ func (c *Config) Validate() error {
 	}
 	if s.Outlier.MaxOnFraction < 0 || s.Outlier.MaxOnFraction > 1 {
 		return errors.New("sweep.outlier.max_on_fraction must be between 0 and 1")
-	}
-	if s.MinOnDuration < 0 {
-		return errors.New("sweep.min_on_duration must not be negative")
 	}
 	if s.Motion.IdleThreshold < 0 {
 		return errors.New("sweep.motion.idle_threshold must not be negative")
